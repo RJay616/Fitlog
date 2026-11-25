@@ -31,8 +31,8 @@
       </div>
       <div class="section-heading"><h2>快捷入口</h2></div>
       <div class="quick-grid">
-        <button class="quick-card" data-go="exercises"><span class="quick-icon">▤</span><b>动作库</b><small>查看和管理动作</small></button>
-        <button class="quick-card" data-go="plans"><span class="quick-icon">▦</span><b>训练课程</b><small>创建自己的训练</small></button>
+        <button class="quick-card" data-go="exercises"><span class="quick-icon">▤</span><b>动作库</b><small>视频、要领与节拍</small></button>
+        <button class="quick-card" data-go="plans"><span class="quick-icon">▦</span><b>训练课程</b><small>组合或自定义动作</small></button>
         <button class="quick-card" data-go="history"><span class="quick-icon">◷</span><b>训练历史</b><small>回顾每次训练</small></button>
         <button class="quick-card" data-go="data"><span class="quick-icon">⇧</span><b>数据备份</b><small>导出或恢复数据</small></button>
       </div>
@@ -41,27 +41,72 @@
     </section>
 
     <section id="page-exercises" class="page">
-      <div class="page-heading"><div><div class="eyebrow">EXERCISES</div><h1>动作库</h1><p>管理动作、训练要领和节奏提示。</p></div><button id="addExerciseBtn" class="primary-small">＋ 添加</button></div>
-      <div class="filter-row"><input id="exerciseSearch" class="search-input" placeholder="搜索动作名称或肌群"><select id="muscleFilter"><option value="全部">全部肌群</option><option>胸部</option><option>背部</option><option>肩部</option><option>手臂</option><option>核心</option><option>臀部</option><option>腿部</option><option>全身</option><option>其他</option></select></div>
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow">EXERCISES</div>
+          <h1>动作库</h1>
+          <p>管理动作、教学视频、呼吸节拍与历史趋势。</p>
+        </div>
+        <button id="addExerciseBtn" class="primary-small">＋ 添加</button>
+      </div>
+      <div class="filter-row">
+        <input id="exerciseSearch" class="search-input" placeholder="搜索动作名称、分类或要领">
+        <select id="muscleFilter">
+          <option value="全部">全部分类</option>
+        </select>
+      </div>
       <div id="exerciseList" class="stack-list"></div>
     </section>
 
     <section id="page-plans" class="page">
-      <div class="page-heading"><div><div class="eyebrow">WORKOUT PLANS</div><h1>训练课程</h1><p>把常用动作组合成自己的课程。</p></div><button id="addPlanBtn" class="primary-small">＋ 新建</button></div>
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow">WORKOUT PLANS</div>
+          <h1>训练课程</h1>
+          <p>把常用或自定义动作组合成专属课程。</p>
+        </div>
+        <button id="addPlanBtn" class="primary-small">＋ 新建</button>
+      </div>
       <div id="planList" class="stack-list"></div>
     </section>
 
     <section id="page-history" class="page">
-      <div class="page-heading"><div><div class="eyebrow">HISTORY</div><h1>训练历史</h1><p>每一次完成，都是进步的证据。</p></div></div>
-      <div class="stats-grid compact-stats"><article class="stat-card"><span>累计训练</span><strong id="historyTotal">0</strong><small>次</small></article><article class="stat-card"><span>累计时长</span><strong id="historyMinutes">0</strong><small>分钟</small></article></div>
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow">HISTORY</div>
+          <h1>训练历史</h1>
+          <p>每一次完成，都是进步的证据。</p>
+        </div>
+      </div>
+      <div class="stats-grid compact-stats">
+        <article class="stat-card"><span>累计训练</span><strong id="historyTotal">0</strong><small>次</small></article>
+        <article class="stat-card"><span>累计时长</span><strong id="historyMinutes">0</strong><small>分钟</small></article>
+      </div>
       <div id="historyList" class="stack-list"></div>
     </section>
 
     <section id="page-data" class="page">
-      <div class="page-heading"><div><div class="eyebrow">YOUR DATA</div><h1>数据与备份</h1><p>数据保存在当前手机浏览器中，请定期备份。</p></div></div>
-      <div class="info-card"><b>本地数据说明</b><p>FitLog 不会自动把训练数据上传到服务器。清理浏览器数据、卸载浏览器或更换手机可能导致记录丢失，请定期导出 JSON 备份。</p></div>
-      <div class="action-list"><button id="exportJsonBtn" class="action-row"><span>⇩</span><div><b>导出完整备份（JSON）</b><small>包含动作、课程和训练记录</small></div><strong>›</strong></button><button id="exportCsvBtn" class="action-row"><span>▤</span><div><b>导出训练明细（CSV）</b><small>可用 Excel 打开</small></div><strong>›</strong></button><label class="action-row file-label"><span>⇧</span><div><b>从备份恢复（JSON）</b><small>恢复前会覆盖当前数据</small></div><strong>›</strong><input id="importJsonInput" type="file" accept="application/json,.json"></label></div>
-      <div class="info-card"><b>版本信息</b><p>FitLog V1.0 · PWA · IndexedDB 本地存储</p><p id="storageStatus">正在检查本地数据库……</p></div>
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow">YOUR DATA</div>
+          <h1>数据与备份</h1>
+          <p>数据保存在当前手机浏览器中，请定期备份。</p>
+        </div>
+      </div>
+      <div class="info-card">
+        <b>本地数据说明</b>
+        <p>FitLog 不会自动把训练数据上传到服务器。清理浏览器数据、卸载浏览器或更换手机可能导致记录丢失，请定期导出 JSON 备份（JSON 备份自动跳过大体积本地视频文件以保证导出流畅）。</p>
+      </div>
+      <div class="action-list">
+        <button id="exportJsonBtn" class="action-row"><span>⇩</span><div><b>导出完整备份（JSON）</b><small>包含动作配置、课程和训练记录</small></div><strong>›</strong></button>
+        <button id="exportCsvBtn" class="action-row"><span>▤</span><div><b>导出训练明细（CSV）</b><small>可用 Excel 打开</small></div><strong>›</strong></button>
+        <label class="action-row file-label"><span>⇧</span><div><b>从备份恢复（JSON）</b><small>恢复前会覆盖当前数据</small></div><strong>›</strong><input id="importJsonInput" type="file" accept="application/json,.json"></label>
+      </div>
+      <div class="info-card">
+        <b>版本信息</b>
+        <p>FitLog V2.0 · PWA · IndexedDB 本地存储</p>
+        <p id="storageStatus">正在检查本地数据库……</p>
+      </div>
     </section>
   </main>
 
@@ -73,13 +118,171 @@
     <button class="nav-item" data-page="data"><span>⚙</span><small>我的</small></button>
   </nav>
 
-  <dialog id="exerciseDialog" class="app-dialog"><form id="exerciseForm" method="dialog"><div class="dialog-head"><h2 id="exerciseDialogTitle">添加动作</h2><button type="button" class="icon-btn" data-close="exerciseDialog">×</button></div><input type="hidden" id="exerciseId"><label>动作名称<input id="exerciseName" required maxlength="50" placeholder="例如：弹力带划船"></label><label>主要肌群<select id="exerciseMuscle"><option>胸部</option><option>背部</option><option>肩部</option><option>手臂</option><option>核心</option><option>臀部</option><option>腿部</option><option>全身</option><option>其他</option></select></label><label>记录类型<select id="exerciseType"><option value="reps">次数型</option><option value="weight">负重型</option><option value="time">时间型</option><option value="side">左右侧型</option></select></label><label>动作要领<textarea id="exerciseNotes" rows="3" placeholder="写下动作姿势、注意事项……"></textarea></label><label>语音提示<textarea id="exerciseCue" rows="2" placeholder="例如：发力时呼气，回程缓慢吸气"></textarea></label><div class="dialog-actions"><button type="button" class="secondary-btn" data-close="exerciseDialog">取消</button><button type="submit" class="primary-btn">保存动作</button></div></form></dialog>
+  <!-- 添加 / 编辑动作弹窗 -->
+  <dialog id="exerciseDialog" class="app-dialog">
+    <form id="exerciseForm" method="dialog">
+      <div class="dialog-head">
+        <h2 id="exerciseDialogTitle">添加动作</h2>
+        <button type="button" class="icon-btn" data-close="exerciseDialog">×</button>
+      </div>
+      <input type="hidden" id="exerciseId">
 
-  <dialog id="planDialog" class="app-dialog"><form id="planForm" method="dialog"><div class="dialog-head"><h2 id="planDialogTitle">新建课程</h2><button type="button" class="icon-btn" data-close="planDialog">×</button></div><input type="hidden" id="planId"><label>课程名称<input id="planName" required maxlength="60" placeholder="例如：臀腿 + 核心"></label><div class="subheading">选择课程动作</div><div id="planExerciseChoices" class="choice-list"></div><div class="dialog-actions"><button type="button" class="secondary-btn" data-close="planDialog">取消</button><button type="submit" class="primary-btn">保存课程</button></div></form></dialog>
+      <label>动作名称
+        <input id="exerciseName" required maxlength="50" placeholder="例如：弹力带后踢、凯格尔收缩">
+      </label>
 
-  <dialog id="detailDialog" class="app-dialog"><div class="dialog-head"><h2 id="detailTitle">动作详情</h2><button type="button" class="icon-btn" data-close="detailDialog">×</button></div><div id="detailContent"></div><div class="dialog-actions"><button type="button" class="primary-btn" data-close="detailDialog">完成</button></div></dialog>
+      <div class="form-row-2">
+        <label>动作分类（臀腿/腰腹/胸/手臂等）
+          <div class="inline-select-group">
+            <select id="exerciseMuscle"></select>
+            <button type="button" id="addCustomCategoryBtn" class="mini-outline-btn" title="新增自定义分类">＋分类</button>
+          </div>
+        </label>
+        <label>记录类型
+          <select id="exerciseType">
+            <option value="reps">次数型</option>
+            <option value="weight">负重型</option>
+            <option value="time">时间型</option>
+            <option value="side">左右侧型</option>
+          </select>
+        </label>
+      </div>
 
-  <dialog id="runnerDialog" class="runner-dialog"><div class="runner-top"><span id="runnerPlanName">训练进行中</span><button class="icon-btn light" id="runnerCloseBtn" type="button">×</button></div><div class="runner-progress"><div id="runnerProgressBar"></div></div><div id="runnerBody" class="runner-body"></div></dialog>
+      <div class="form-section-box">
+        <div class="box-title">默认目标参数（加入课程时自动带入）</div>
+        <div class="form-row-4">
+          <label>组数<input id="exDefaultSets" type="number" min="1" max="20" value="3"></label>
+          <label>次数/秒<input id="exDefaultTarget" type="number" min="1" max="999" value="12"></label>
+          <label>重量kg<input id="exDefaultWeight" type="number" min="0" max="999" step="0.5" value="0"></label>
+          <label>休息秒<input id="exDefaultRest" type="number" min="0" max="600" value="45"></label>
+        </div>
+      </div>
+
+      <div class="form-section-box">
+        <div class="box-title">教学视频（本地上传或链接）</div>
+        <input id="exerciseVideoFile" type="file" accept="video/*">
+        <input id="exerciseVideoUrl" type="url" placeholder="或粘贴视频直链（可选）">
+        <div id="exerciseVideoPreviewWrap" class="video-preview-wrap hidden">
+          <video id="exerciseVideoPreview" controls playsinline muted loop></video>
+          <button type="button" id="clearExerciseVideoBtn" class="small-btn danger-text">移除视频</button>
+        </div>
+      </div>
+
+      <label>动作要领
+        <textarea id="exerciseNotes" rows="3" placeholder="写下标准姿势、发力点、避免代偿的注意事项……"></textarea>
+      </label>
+
+      <label>专属语音播报（动作开始前播报提醒）
+        <textarea id="exerciseCue" rows="2" placeholder="例如：注意背部挺直，发力时呼气，绝不憋气！"></textarea>
+      </label>
+
+      <div class="form-section-box">
+        <div class="box-header-inline">
+          <span class="box-title">呼吸与节拍节奏引导</span>
+          <select id="tempoPresetSelect" class="preset-select">
+            <option value="">套用节拍模板…</option>
+            <option value="pushup">俯卧撑（吸气下放3秒 · 呼气上撑1秒）</option>
+            <option value="kegel">凯格尔收缩（呼气收缩3秒 · 吸气放松10秒）</option>
+            <option value="kickback">弹力带后踢（呼气后踢1秒 · 保持2秒 · 吸气回收3秒）</option>
+            <option value="squat">深蹲节奏（吸气下蹲3秒 · 停顿1秒 · 呼气站起1秒）</option>
+          </select>
+        </div>
+        <label class="inline-label">起势准备缓冲（秒）
+          <input id="exPrepSeconds" type="number" min="0" max="30" value="5">
+        </label>
+        <div id="tempoPhaseList" class="tempo-phase-list"></div>
+        <button type="button" id="addTempoPhaseBtn" class="mini-outline-btn full-width">＋ 添加呼吸/节拍阶段</button>
+      </div>
+
+      <div class="dialog-actions">
+        <button type="button" class="secondary-btn" data-close="exerciseDialog">取消</button>
+        <button type="submit" class="primary-btn">保存动作</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 新建 / 编辑课程弹窗 -->
+  <dialog id="planDialog" class="app-dialog">
+    <form id="planForm" method="dialog">
+      <div class="dialog-head">
+        <h2 id="planDialogTitle">新建课程</h2>
+        <button type="button" class="icon-btn" data-close="planDialog">×</button>
+      </div>
+      <input type="hidden" id="planId">
+      <label>课程名称
+        <input id="planName" required maxlength="60" placeholder="例如：臀腿塑形 + 盆底肌强化">
+      </label>
+
+      <!-- 课程内直接自定义动作面板 -->
+      <div class="quick-custom-box">
+        <button type="button" id="toggleQuickCustomBtn" class="quick-custom-toggle">
+          <span>＋ 动作库里没有？点此直接自定义动作并加入课程</span>
+          <strong id="quickCustomArrow">▾</strong>
+        </button>
+        <div id="quickCustomPanel" class="quick-custom-panel hidden">
+          <div class="form-row-2">
+            <input id="qcName" placeholder="新动作名称（如：单腿臀桥）" maxlength="50">
+            <select id="qcMuscle"></select>
+          </div>
+          <div class="form-row-4">
+            <select id="qcType">
+              <option value="reps">次数型</option>
+              <option value="weight">负重型</option>
+              <option value="time">时间型</option>
+              <option value="side">左右侧型</option>
+            </select>
+            <input id="qcSets" type="number" min="1" max="20" value="3" placeholder="组数" title="组数">
+            <input id="qcTarget" type="number" min="1" max="999" value="12" placeholder="次数/秒" title="目标次数或秒数">
+            <input id="qcRest" type="number" min="0" max="600" value="45" placeholder="休息秒" title="组间休息秒">
+          </div>
+          <input id="qcCue" placeholder="专属语音提示（可选，如：顶峰收缩2秒，缓慢下放）">
+          <button type="button" id="saveQuickCustomBtn" class="small-btn blue full-width">保存并加入当前课程</button>
+        </div>
+      </div>
+
+      <div class="subheading-row">
+        <span class="subheading">已选动作顺序与参数（可调顺序/改参数）</span>
+      </div>
+      <div id="selectedPlanItems" class="selected-plan-list"></div>
+
+      <div class="subheading-row">
+        <span class="subheading">从动作库勾选添加</span>
+        <input id="planExerciseSearch" class="mini-search" placeholder="筛选动作…">
+      </div>
+      <div id="planExerciseChoices" class="choice-list"></div>
+
+      <div class="dialog-actions">
+        <button type="button" class="secondary-btn" data-close="planDialog">取消</button>
+        <button type="submit" class="primary-btn">保存课程</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 动作详情 / 历史趋势弹窗 -->
+  <dialog id="detailDialog" class="app-dialog">
+    <div class="dialog-head">
+      <h2 id="detailTitle">动作详情</h2>
+      <button type="button" class="icon-btn" data-close="detailDialog">×</button>
+    </div>
+    <div id="detailTabs" class="detail-tabs hidden">
+      <button type="button" class="tab-btn active" data-detail-tab="info">动作要领与视频</button>
+      <button type="button" class="tab-btn" data-detail-tab="history">历史记录与趋势</button>
+    </div>
+    <div id="detailContent"></div>
+    <div class="dialog-actions">
+      <button type="button" class="primary-btn" data-close="detailDialog">完成</button>
+    </div>
+  </dialog>
+
+  <!-- 训练执行弹窗 -->
+  <dialog id="runnerDialog" class="runner-dialog">
+    <div class="runner-top">
+      <span id="runnerPlanName">训练进行中</span>
+      <button class="icon-btn light" id="runnerCloseBtn" type="button">×</button>
+    </div>
+    <div class="runner-progress"><div id="runnerProgressBar"></div></div>
+    <div id="runnerBody" class="runner-body"></div>
+  </dialog>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="app.js" defer></script>
