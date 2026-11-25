@@ -1824,7 +1824,7 @@ function openDeepseekWeb() {
   }
 }
 
-async /* ===================== 训练提醒 ===================== */
+/* ===================== 训练提醒 ===================== */
 function loadReminders() {
   try {
     const saved = JSON.parse(localStorage.getItem(REMINDERS_KEY) || '{}');
