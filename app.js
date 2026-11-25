@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.2';
+const APP_VERSION = '1.3';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -57,6 +57,13 @@ const speechQueue = [];
 let isSpeaking = false;
 let speechWatchdog = null;
 let speechFinish = null;
+let speechKeepAlive = null;
+
+// 语音音色设置（持久化）
+const VOICE_SETTINGS_KEY = 'fitlog-voice-settings';
+// mode: full=完整语音 / count=仅报数与关键提示 / beep=仅提示音不说话
+const voiceSettings = { mode: 'full', voiceURI: '', pitch: 0.9, rate: 1.0 };
+let voicesLoaded = false;
 
 const $ = id => document.getElementById(id);
 const makeId = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -163,15 +170,82 @@ function playBeep(freq = 880, durationMs = 160, count = 1, gapMs = 200) {
 }
 
 function playCountCue() { playBeep(1180, 80, 2, 130); }
+function playTickCue() { playBeep(880, 90, 1); }
 function playRestStartCue() { playBeep(660, 180, 1); }
 function playRestTickCue() { playBeep(980, 130, 1); }
 function playRestEndCue() { playBeep(1200, 220, 3, 160); }
 
-function pickLocalVoice() {
-  if (!('speechSynthesis' in window)) return null;
-  const voices = window.speechSynthesis.getVoices() || [];
-  const zhVoices = voices.filter(v => /zh|cmn|Chinese/i.test(v.lang));
-  return zhVoices.find(v => v.localService) || zhVoices[0] || null;
+/* ---------- 语音音色设置 ---------- */
+function loadVoiceSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(VOICE_SETTINGS_KEY) || '{}');
+    if (saved && typeof saved === 'object') {
+      if (['full', 'count', 'beep'].includes(saved.mode)) voiceSettings.mode = saved.mode;
+      if (typeof saved.voiceURI === 'string') voiceSettings.voiceURI = saved.voiceURI;
+      if (Number.isFinite(saved.pitch)) voiceSettings.pitch = Math.min(2, Math.max(0, saved.pitch));
+      if (Number.isFinite(saved.rate)) voiceSettings.rate = Math.min(2, Math.max(0.5, saved.rate));
+    }
+  } catch (_) {}
+}
+
+function saveVoiceSettings() {
+  try { localStorage.setItem(VOICE_SETTINGS_KEY, JSON.stringify(voiceSettings)); } catch (_) {}
+}
+
+function getAllVoices() {
+  if (!('speechSynthesis' in window)) return [];
+  try { return window.speechSynthesis.getVoices() || []; } catch (_) { return []; }
+}
+
+// 填充"语音音色"下拉：中文声音优先，再列其他可用声音
+function refreshVoiceSelect() {
+  const sel = $('voiceSelect');
+  if (!sel) return;
+  const voices = getAllVoices();
+  const sorted = voices.slice().sort((a, b) => {
+    const ac = isChineseVoice(a) ? 0 : 1;
+    const bc = isChineseVoice(b) ? 0 : 1;
+    return ac - bc || maleVoiceScore(b) - maleVoiceScore(a);
+  });
+  const current = voiceSettings.voiceURI;
+  sel.innerHTML = `<option value="">自动优选男声${voices.length ? '' : '（系统暂无可用声音）'}</option>`
+    + sorted.map(v => {
+      const label = `${v.name}${v.localService ? '（本地）' : ''} · ${v.lang}`;
+      return `<option value="${escapeHtml(v.voiceURI || v.name)}">${escapeHtml(label)}</option>`;
+    }).join('');
+  sel.value = current || '';
+}
+
+function isChineseVoice(v) {
+  return /zh|cmn|Chinese/i.test(v.lang || '') || /中文|普通话|汉语|Chinese/i.test(v.name || '');
+}
+
+// 男声优先评分：名字里的男声关键词加分，女声关键词减分，本地语音加分
+function maleVoiceScore(v) {
+  const name = (v.name || '').toLowerCase();
+  const lang = (v.lang || '').toLowerCase();
+  let score = 0;
+  // 明确的男声标识
+  if (/male|男声|男|yunxi|yunyang|yunye|kangkang|kang|xiaoyong|xiaobo|xiaoyu|david|daniel|liang|wei|jun/i.test(name)) score += 100;
+  // 常见女声标识，降权
+  if (/female|女声|女|tingting|ting|huihui|xiaoxiao|xiaoyi|meijia|samantha|victoria|karen|mo|wei\s*\(|zhiyu/i.test(name)) score -= 60;
+  // 本地离线语音更稳定，优先
+  if (v.localService) score += 20;
+  // 标准中文（大陆）优先
+  if (/zh[-_]?cn|cmn[-_]?hans|chinese \(china|普通话/i.test(`${lang} ${name}`)) score += 10;
+  return score;
+}
+
+function pickPreferredVoice() {
+  const voices = getAllVoices();
+  if (!voices.length) return null;
+  if (voiceSettings.voiceURI) {
+    const saved = voices.find(v => v.voiceURI === voiceSettings.voiceURI || v.name === voiceSettings.voiceURI);
+    if (saved) return saved;
+  }
+  const zh = voices.filter(isChineseVoice);
+  const pool = zh.length ? zh : voices;
+  return pool.slice().sort((a, b) => maleVoiceScore(b) - maleVoiceScore(a))[0] || null;
 }
 
 function cancelSpeech() {
@@ -181,28 +255,41 @@ function cancelSpeech() {
   if (speechWatchdog) clearTimeout(speechWatchdog);
   speechWatchdog = null;
   speechFinish = null;
+  if (speechKeepAlive) clearInterval(speechKeepAlive);
+  speechKeepAlive = null;
   speechQueue.length = 0;
   isSpeaking = false;
 }
 
-// 队列播报：默认不打断，避免每秒报数时互相 cancel 导致断续
-function speak(text, interrupt = false) {
-  if (!('speechSynthesis' in window) || !text) return;
+// kind: info=长句说明 / count=报数 / key=关键提示
+function speak(text, interrupt = false, kind = 'info') {
+  if (!text) return;
+  const str = String(text);
+  // 语音模式过滤：beep 完全不说话，count 只说报数与关键提示
+  if (voiceSettings.mode === 'beep') return;
+  if (voiceSettings.mode === 'count' && kind === 'info') return;
   if (interrupt) cancelSpeech();
-  speechQueue.push(String(text));
+  speechQueue.push({ text: str, kind });
+  // 队列过长时丢弃最旧的普通说明，避免越积越多导致断续
+  while (speechQueue.length > 6) {
+    const idx = speechQueue.findIndex(q => q.kind === 'info');
+    speechQueue.splice(idx >= 0 ? idx : 0, 1);
+  }
   processSpeechQueue();
 }
 
+// 报数：提示音始终响（即使静音模式也听得见节奏），语音按模式决定
 function speakCount(text) {
   playCountCue();
-  speak(text, false);
+  speak(text, false, 'count');
 }
 
 function processSpeechQueue() {
   if (isSpeaking || speechQueue.length === 0) return;
-  if (!('speechSynthesis' in window)) return;
+  if (!('speechSynthesis' in window)) { speechQueue.length = 0; return; }
 
-  const text = speechQueue.shift();
+  const item = speechQueue.shift();
+  const text = item.text;
   let settled = false;
   const finish = () => {
     if (settled) return;
@@ -211,21 +298,37 @@ function processSpeechQueue() {
     speechWatchdog = null;
     speechFinish = null;
     isSpeaking = false;
-    setTimeout(processSpeechQueue, 120);
+    if (speechKeepAlive) clearInterval(speechKeepAlive);
+    speechKeepAlive = null;
+    setTimeout(processSpeechQueue, 60);
   };
 
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = 'zh-CN';
-  utterance.rate = 0.96;
+  let utterance;
+  try { utterance = new SpeechSynthesisUtterance(text); } catch (_) { finish(); return; }
+  const voice = pickPreferredVoice();
+  if (voice) { utterance.voice = voice; utterance.lang = voice.lang || 'zh-CN'; }
+  else utterance.lang = 'zh-CN';
+  // 报数语速略快，长句保持正常；音调默认压低一点更接近男声
+  utterance.rate = voiceSettings.rate * (item.kind === 'count' ? 1.12 : 1);
+  utterance.pitch = voiceSettings.pitch;
   utterance.volume = 1;
-  const voice = pickLocalVoice();
-  if (voice) utterance.voice = voice;
   utterance.onend = finish;
   utterance.onerror = finish;
 
   isSpeaking = true;
   speechFinish = finish;
-  const estimatedMs = Math.min(9000, 1400 + text.length * 260);
+  // 安卓 Chrome 长文本容易被系统回收暂停，定时 resume 保活
+  if (speechKeepAlive) clearInterval(speechKeepAlive);
+  speechKeepAlive = setInterval(() => {
+    try {
+      if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
+        window.speechSynthesis.pause();
+        window.speechSynthesis.resume();
+      }
+    } catch (_) {}
+  }, 6000);
+
+  const estimatedMs = Math.min(12000, 1200 + text.length * 300);
   speechWatchdog = setTimeout(() => {
     try { window.speechSynthesis.cancel(); } catch (_) {}
     if (speechFinish) speechFinish();
@@ -235,7 +338,11 @@ function processSpeechQueue() {
 }
 
 if ('speechSynthesis' in window) {
-  window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+  window.speechSynthesis.onvoiceschanged = () => {
+    getAllVoices();
+    voicesLoaded = true;
+    refreshVoiceSelect();
+  };
 }
 
 /* ===================== 视频声音清理 ===================== */
@@ -440,8 +547,15 @@ function initPullRefresh() {
     indicator.textContent = '下拉刷新当前页面...';
   };
 
+  // 对话框内部有自己的滚动容器，绝对不能在这里触发下拉刷新，
+  // 否则 touchmove 的 preventDefault 会拦截弹窗内滚动，导致“添加课程滑几下就卡住”
+  const insideDialog = e => {
+    const t = e.target;
+    return t && typeof t.closest === 'function' && t.closest('dialog');
+  };
+
   window.addEventListener('touchstart', e => {
-    if (e.touches.length !== 1 || !atTop()) return;
+    if (e.touches.length !== 1 || !atTop() || insideDialog(e)) return;
     startY = e.touches[0].clientY;
     pulling = true;
     pullAmount = 0;
@@ -449,6 +563,7 @@ function initPullRefresh() {
 
   window.addEventListener('touchmove', e => {
     if (!pulling || !indicator) return;
+    if (insideDialog(e)) { pulling = false; reset(); return; }
     const deltaY = e.touches[0].clientY - startY;
     if (deltaY <= 0 || !atTop()) {
       pulling = false;
@@ -592,8 +707,8 @@ function renderTempoPhaseEditor(phases = []) {
     <div class="tempo-phase-row" data-phase-idx="${idx}">
       <input type="text" class="tp-label" value="${escapeHtml(p.label || '')}" placeholder="如：吸气-向下">
       <input type="number" class="tp-sec" min="1" max="120" value="${clampInt(p.seconds, 1, 120, 3)}" title="持续秒数">
-      <label class="tempo-count-toggle" title="按秒数报数 1,2,3...">
-        <input type="checkbox" class="tp-count" ${p.countOut ? 'checked' : ''}>报数
+      <label class="tempo-count-toggle" title="保留阶段标记（不影响报数，训练时每秒滴答、每完成一次报数）">
+        <input type="checkbox" class="tp-count" ${p.countOut ? 'checked' : ''}>阶段
       </label>
       <button type="button" class="tempo-del-btn" data-remove-phase="${idx}" title="删除阶段">×</button>
     </div>
@@ -707,7 +822,7 @@ async function showExerciseDetail(id, tab = 'info', chartMetric = 'primary') {
       videoHtml = `<div class="detail-line"><b>教学视频</b><br><video class="detail-video" controls playsinline loop src="${escapeHtml(exercise.videoUrl)}"></video></div>`;
     }
     const tempoHtml = (exercise.tempoPhases && exercise.tempoPhases.length)
-      ? `<div class="detail-line"><b>呼吸与节拍节奏（起势准备 ${exercise.prepSeconds ?? 5} 秒）</b><br>${exercise.tempoPhases.map((p, i) => `${i + 1}. ${escapeHtml(p.label)}（${p.seconds}秒${p.countOut ? ' · 逐秒报数' : ''}）`).join('<br>')}</div>`
+      ? `<div class="detail-line"><b>节拍节奏（起势准备 ${exercise.prepSeconds ?? 5} 秒）</b><br>${exercise.tempoPhases.map((p, i) => `${i + 1}. ${escapeHtml(p.label)}（${p.seconds}秒）`).join('<br>')}<br>训练时每秒滴一声，每完成一次报一个数。</div>`
       : `<div class="detail-line"><b>起势准备</b>：${exercise.prepSeconds ?? 5} 秒</div>`;
 
     $('detailContent').innerHTML = `
@@ -1053,7 +1168,7 @@ function setupRunnerPhase(isFirstStart = false) {
         if (runner && runner.phase === 'video') advanceRunner();
       }, 900);
     }
-    speak(`纯视频跟练：${exercise.name}`, true);
+    speak(`纯视频跟练：${exercise.name}`, true, 'key');
     return;
   }
 
@@ -1064,32 +1179,36 @@ function setupRunnerPhase(isFirstStart = false) {
     const prefix = isFirstStart
       ? `开始训练，${runner.planName}。第一个动作，${exercise.name}。`
       : `准备动作，${exercise.name}，第${runner.setIndex}组。`;
-    const cuePart = exercise.cue ? `${exercise.cue}。` : '';
-    speak(`${prefix}${cuePart}请调整初始姿势，准备开始。`, true);
+    speak(`${prefix}请调整初始姿势，准备开始。`, true, 'key');
     renderRunner();
     startCountdownLoop('prepare');
   } else if (runner.phase === 'work') {
     runner.tempoIndex = 0;
     runner.completedRepsInSet = 0;
+    runner.elapsedSec = 0;
     renderRunner();
     if (hasTempo) {
-      startTempoPhase(0, true);
+      startTempoPhase(0);
     } else {
-      speak(`开始第${runner.setIndex}组，${exercise.name}。`, true);
+      // 无节拍动作（如平板支撑）：每秒滴一声，帮用户掌握节奏，不用语音描述
+      speak(`开始第${runner.setIndex}组，${exercise.name}。`, true, 'key');
+      startPlainTickLoop();
     }
   } else if (runner.phase === 'rest') {
     runner.remaining = clampInt(item.restSeconds, 0, 600, 30);
     playRestStartCue();
-    speak(`本组完成，休息${runner.remaining}秒。`, true);
+    speak(`本组完成，休息${runner.remaining}秒。`, true, 'key');
     renderRunner();
     startCountdownLoop('rest');
   } else if (runner.phase === 'done') {
     renderRunner();
-    speak('训练课程已经全部完成，太棒了！', true);
+    speak('训练课程已经全部完成，太棒了！', true, 'key');
   }
 }
 
-function startTempoPhase(phaseIdx, announceStart = false) {
+// 简洁节拍：每秒滴一声掌握节奏，每完成一个动作报一次数（1、2、3…）
+// 不再播报“吸气下蹲 / 呼气站起”等描述，避免语音嘈杂断续
+function startTempoPhase(phaseIdx) {
   stopRunnerTimer();
   if (!runner || runner.phase !== 'work') return;
   const exercise = currentRunnerItem().exercise;
@@ -1101,51 +1220,52 @@ function startTempoPhase(phaseIdx, announceStart = false) {
   runner.tempoSecLeft = clampInt(p.seconds, 1, 120, 3);
   renderRunner();
 
-  if (announceStart || p.voice || p.label) {
-    speak(p.voice || p.label, true);
-  }
-  if (p.countOut) {
-    setTimeout(() => {
-      if (runner && runner.phase === 'work' && runner.tempoIndex === phaseIdx) speakCount('1');
-    }, 350);
-  }
-
-  let tick = 1;
   timerHandle = setInterval(() => {
     if (!runner || runner.phase !== 'work') {
       stopRunnerTimer();
       return;
     }
     runner.tempoSecLeft -= 1;
+    playTickCue(); // 每秒一声轻滴
     const numEl = $('runnerNumber');
     if (numEl) numEl.textContent = Math.max(0, runner.tempoSecLeft);
 
-    if (runner.tempoSecLeft > 0) {
-      tick += 1;
-      if (p.countOut) speakCount(String(tick));
+    if (runner.tempoSecLeft > 0) return;
+
+    const nextIdx = runner.tempoIndex + 1;
+    if (nextIdx < phases.length) {
+      startTempoPhase(nextIdx);
     } else {
-      // 当前节拍阶段结束
-      const nextIdx = runner.tempoIndex + 1;
-      if (nextIdx < phases.length) {
-        startTempoPhase(nextIdx, true);
+      // 一轮节拍走完 = 完成一个动作，报数
+      runner.completedRepsInSet += 1;
+      const countText = exercise.type === 'time'
+        ? `${runner.completedRepsInSet}次`
+        : String(runner.completedRepsInSet);
+      speakCount(countText);
+      const targetReps = currentRunnerItem().target;
+      const inputEl = $('actualValue');
+      if (inputEl && exercise.type !== 'side') inputEl.value = runner.completedRepsInSet;
+      if (targetReps && runner.completedRepsInSet >= targetReps) {
+        stopRunnerTimer();
+        speak(`已完成${targetReps}次，本组结束。`, true, 'key');
       } else {
-        // 完成一轮完整节拍循环 -> 计数 +1
-        runner.completedRepsInSet += 1;
-        const targetReps = currentRunnerItem().target;
-        const inputEl = $('actualValue');
-        if (inputEl && exercise.type !== 'side') {
-          inputEl.value = runner.completedRepsInSet;
-        }
-        if (targetReps && runner.completedRepsInSet >= targetReps) {
-          stopRunnerTimer();
-          speak(`已达到目标${targetReps}次，本组完成！`, true);
-          const subEl = $('tempoStatusSub');
-          if (subEl) subEl.textContent = `已完成目标 ${runner.completedRepsInSet} 次，点击下方“完成本组”记录`;
-        } else {
-          startTempoPhase(0, true);
-        }
+        startTempoPhase(0);
       }
     }
+  }, 1000);
+}
+
+// 无节拍动作（如平板支撑）：每秒滴一声，显示已坚持秒数，不说话
+function startPlainTickLoop() {
+  stopRunnerTimer();
+  if (!runner || runner.phase !== 'work') return;
+  runner.elapsedSec = 0;
+  timerHandle = setInterval(() => {
+    if (!runner || runner.phase !== 'work') { stopRunnerTimer(); return; }
+    runner.elapsedSec = (runner.elapsedSec || 0) + 1;
+    playTickCue();
+    const numEl = $('runnerNumber');
+    if (numEl) numEl.textContent = runner.elapsedSec;
   }, 1000);
 }
 
@@ -1276,11 +1396,11 @@ function renderRunner() {
       setupRunnerPhase(false);
     };
   } else if (runner.phase === 'work') {
-    $('runnerCueBtn').onclick = () => speak(exercise.cue || exercise.notes || exercise.name);
+    $('runnerCueBtn').onclick = () => speak(exercise.cue || exercise.notes || exercise.name, true, 'key');
     if ($('restartTempoBtn')) {
       $('restartTempoBtn').onclick = () => {
         runner.completedRepsInSet = 0;
-        startTempoPhase(0, true);
+        startTempoPhase(0);
       };
     }
     $('completeSetBtn').onclick = completeSet;
@@ -1322,7 +1442,7 @@ function completeSet() {
   if (isSide ? (left <= 0 && right <= 0) : (actual <= 0)) {
     showToast('请输入本组实际完成数据');
     if (Array.isArray(exercise.tempoPhases) && exercise.tempoPhases.length) {
-      startTempoPhase(runner.tempoIndex || 0, false);
+      startTempoPhase(runner.tempoIndex || 0);
     }
     return;
   }
@@ -1661,13 +1781,36 @@ async function exportDeepseek() {
 
   const text = lines.join('\n');
   const copied = await copyText(text);
-  showToast(copied ? '训练数据已复制，正在打开 DeepSeek...' : '复制受限，请手动粘贴已选中的文本');
-  const opened = window.open('https://chat.deepseek.com/', '_blank');
-  if (opened) {
-    try { opened.opener = null; } catch (_) {}
-  } else {
-    showToast('弹窗被拦截，请手动访问 chat.deepseek.com');
-  }
+  showToast(copied ? '训练数据已复制，正在尝试打开 DeepSeek App…' : '复制受限，请手动粘贴已选中的文本');
+  openDeepseek();
+}
+
+// 优先唤起 DeepSeek App，1.6 秒内没离开页面（说明没装或唤起失败）则回退网页版
+function openDeepseek() {
+  const ua = navigator.userAgent || '';
+  const isAndroid = /Android/i.test(ua);
+  let leftPage = false;
+  const onHide = () => { if (document.hidden) leftPage = true; };
+  document.addEventListener('visibilitychange', onHide);
+
+  const fallbackWeb = () => {
+    document.removeEventListener('visibilitychange', onHide);
+    if (leftPage || document.hidden) return;
+    const opened = window.open('https://chat.deepseek.com/', '_blank');
+    if (opened) {
+      try { opened.opener = null; } catch (_) {}
+      showToast('未检测到 DeepSeek App，已打开网页版，请粘贴数据');
+    } else {
+      showToast('请手动打开 DeepSeek App 或网页版粘贴数据');
+    }
+  };
+
+  // 安卓用 intent 指向官方包名，iOS/其他用 URL Scheme
+  const target = isAndroid
+    ? 'intent://chat#Intent;scheme=deepseek;package=com.deepseek.chat;end'
+    : 'deepseek://';
+  try { window.location.href = target; } catch (_) {}
+  setTimeout(fallbackWeb, 1600);
 }
 
 async function refreshCurrentPage() {
@@ -1772,9 +1915,11 @@ function bindEvents() {
   // 课程事件
   $('addPlanBtn').addEventListener('click', () => openPlanEditor());
   $('planForm').addEventListener('submit', savePlan);
+  let planSearchTimer = null;
   $('planExerciseSearch').addEventListener('input', () => {
     syncDraftItemsFromDom();
-    renderPlanEditorLists();
+    clearTimeout(planSearchTimer);
+    planSearchTimer = setTimeout(() => renderPlanEditorLists(), 180);
   });
 
   $('toggleQuickCustomBtn').addEventListener('click', () => {
@@ -1844,14 +1989,44 @@ function bindEvents() {
     playBeep(880, 160, 2);
     showToast('已触发滴滴提示音');
   });
+  // 语音音色设置
+  const voiceModeSel = $('voiceMode');
+  const voiceSelect = $('voiceSelect');
+  const voicePitch = $('voicePitch');
+  const voiceRate = $('voiceRate');
+  const syncVoiceControls = () => {
+    if (voiceModeSel) voiceModeSel.value = voiceSettings.mode;
+    if (voicePitch) { voicePitch.value = voiceSettings.pitch; const v = $('voicePitchVal'); if (v) v.textContent = Number(voiceSettings.pitch).toFixed(1); }
+    if (voiceRate) { voiceRate.value = voiceSettings.rate; const v = $('voiceRateVal'); if (v) v.textContent = Number(voiceSettings.rate).toFixed(1); }
+    if (voiceSelect) voiceSelect.value = voiceSettings.voiceURI || '';
+  };
+  syncVoiceControls();
+  if (voiceModeSel) voiceModeSel.addEventListener('change', e => { voiceSettings.mode = e.target.value; saveVoiceSettings(); showToast('播报模式已保存'); });
+  if (voiceSelect) voiceSelect.addEventListener('change', e => { voiceSettings.voiceURI = e.target.value; saveVoiceSettings(); showToast('语音音色已保存'); });
+  if (voicePitch) voicePitch.addEventListener('input', e => {
+    voiceSettings.pitch = Number(e.target.value);
+    const v = $('voicePitchVal'); if (v) v.textContent = voiceSettings.pitch.toFixed(1);
+  });
+  if (voicePitch) voicePitch.addEventListener('change', () => { saveVoiceSettings(); });
+  if (voiceRate) voiceRate.addEventListener('input', e => {
+    voiceSettings.rate = Number(e.target.value);
+    const v = $('voiceRateVal'); if (v) v.textContent = voiceSettings.rate.toFixed(1);
+  });
+  if (voiceRate) voiceRate.addEventListener('change', () => { saveVoiceSettings(); });
+
   const testVoiceBtn = $('btnTestVoice');
   if (testVoiceBtn) testVoiceBtn.addEventListener('click', () => {
     unlockAudio();
-    const voice = pickLocalVoice();
-    const source = voice && voice.localService ? '本地语音' : '系统语音';
-    speak(`${source}测试开始。第1次，第2次，第3次。`, true);
+    const voice = pickPreferredVoice();
+    const name = voice ? voice.name : '系统默认语音';
+    if (voiceSettings.mode === 'beep') {
+      playCountCue();
+      showToast('当前为“仅提示音”模式，已播放滴滴声');
+      return;
+    }
+    speak('第1次，第2次，第3次，做得很棒。', true, 'key');
     playCountCue();
-    showToast(`正在使用${source}播报，请检查手机音量`);
+    showToast(`正在试听：${name}`);
   });
 
   // 切后台只暂停；退出页面/返回缓存页时彻底关闭视频声音
@@ -1916,10 +2091,15 @@ function bindEvents() {
 }
 
 async function init() {
+  loadVoiceSettings();
   initAudioUnlock();
   initPullRefresh();
   initCacheManager();
   bindEvents();
+
+  // 系统声音列表通常是异步加载的，多次尝试填充音色下拉
+  refreshVoiceSelect();
+  [300, 1200].forEach(delay => setTimeout(refreshVoiceSelect, delay));
 
   const versionEl = $('appVersion');
   if (versionEl) versionEl.textContent = `v${APP_VERSION}`;

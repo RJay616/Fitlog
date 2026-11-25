@@ -14,7 +14,7 @@
   <header class="topbar">
     <div class="brand"><div class="brand-mark">F</div><div><strong>FitLog</strong><small>我的私人运动教练</small></div></div>
     <div class="topbar-actions">
-      <span class="version-badge" id="appVersion">v1.2</span>
+      <span class="version-badge" id="appVersion">v1.3</span>
       <button id="installBtn" class="install-btn hidden" type="button">安装</button>
     </div>
   </header>
@@ -116,13 +116,32 @@
         <div class="cache-actions"><button id="btnScanCache" class="small-btn">重新扫描</button><button id="btnCleanCache" class="small-btn danger-text">清理所选缓存</button></div>
       </div>
       <div class="info-card">
-        <b>语音与提示音自检</b>
-        <p>计数和组间倒计时会同时播放滴滴提示音；语音优先使用系统本地中文声音。训练前请测试并调好媒体音量。</p>
-        <div class="cache-actions"><button id="btnTestBeep" class="small-btn">测试滴滴音</button><button id="btnTestVoice" class="small-btn">测试语音计数</button></div>
+        <b>语音音色设置</b>
+        <p>默认自动优选男声并压低音调。若不合适，可在这里手动挑一个更自然的系统声音并试听；设置会保存在本机。</p>
+        <div class="voice-settings">
+          <label>播报模式
+            <select id="voiceMode">
+              <option value="full">完整播报（报数 + 提示语）</option>
+              <option value="count">仅报数（跳过长句提示）</option>
+              <option value="beep">仅滴滴提示音（不说话）</option>
+            </select>
+          </label>
+          <label>语音音色
+            <select id="voiceSelect"><option value="">自动优选男声</option></select>
+          </label>
+          <label>音调 <span id="voicePitchVal" class="voice-val">0.9</span>
+            <input id="voicePitch" type="range" min="0" max="2" step="0.1" value="0.9">
+          </label>
+          <label>语速 <span id="voiceRateVal" class="voice-val">1.0</span>
+            <input id="voiceRate" type="range" min="0.6" max="1.6" step="0.1" value="1.0">
+          </label>
+        </div>
+        <p>节拍报数只数数字（1、2、3…），保持类动作每秒滴一声，不再播报“吸气 / 呼气”等描述。</p>
+        <div class="cache-actions"><button id="btnTestBeep" class="small-btn">测试滴滴音</button><button id="btnTestVoice" class="small-btn">试听当前音色</button></div>
       </div>
       <div class="info-card">
         <b>版本信息</b>
-        <p>FitLog <span id="appVersionData">v1.2</span> · PWA · IndexedDB 本地存储（小版本 1.1、1.2…，大改版从 2.1 起）</p>
+        <p>FitLog <span id="appVersionData">v1.3</span> · PWA · IndexedDB 本地存储（小版本 1.1、1.2…，大改版从 2.1 起）</p>
         <p id="storageStatus">正在检查本地数据库……</p>
       </div>
     </section>
