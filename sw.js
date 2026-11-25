@@ -1,5 +1,5 @@
 // 版本规范：1.1、1.2 小迭代；2.1 起为大改版
-const CACHE_VERSION = '1.3';
+const CACHE_VERSION = '1.4';
 const CACHE_NAME = `fitlog-v${CACHE_VERSION}-cache`;
 const APP_FILES = [
   './',
@@ -44,5 +44,18 @@ self.addEventListener('fetch', event => {
       .catch(() =>
         caches.match(event.request).then(cached => cached || caches.match('./index.html'))
       )
+  );
+});
+
+// 点击提醒通知后打开并聚焦 App
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+      for (const client of list) {
+        if ('focus' in client) return client.focus();
+      }
+      if (clients.openWindow) return clients.openWindow('./');
+    })
   );
 });

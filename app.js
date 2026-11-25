@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.3';
+const APP_VERSION = '1.4';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -64,6 +64,11 @@ const VOICE_SETTINGS_KEY = 'fitlog-voice-settings';
 // mode: full=完整语音 / count=仅报数与关键提示 / beep=仅提示音不说话
 const voiceSettings = { mode: 'full', voiceURI: '', pitch: 0.9, rate: 1.0 };
 let voicesLoaded = false;
+
+// 训练提醒（持久化）
+const REMINDERS_KEY = 'fitlog-reminders';
+// rules: [{ id, type:'once'|'daily'|'hourly', time:'HH:MM', start:'HH:MM', end:'HH:MM', text, enabled }]
+const reminderState = { rules: [], tickTimer: null };
 
 const $ = id => document.getElementById(id);
 const makeId = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -1218,6 +1223,12 @@ function startTempoPhase(phaseIdx) {
   runner.tempoIndex = phaseIdx % phases.length;
   const p = phases[runner.tempoIndex];
   runner.tempoSecLeft = clampInt(p.seconds, 1, 120, 3);
+
+  // 一次动作开始前：先报“第几个”，随后每秒一声滴滴
+  if (phaseIdx === 0) {
+    speak(`第${runner.completedRepsInSet + 1}个`, true, 'count');
+  }
+
   renderRunner();
 
   timerHandle = setInterval(() => {
@@ -1236,12 +1247,8 @@ function startTempoPhase(phaseIdx) {
     if (nextIdx < phases.length) {
       startTempoPhase(nextIdx);
     } else {
-      // 一轮节拍走完 = 完成一个动作，报数
+      // 一轮节拍走完 = 完成一个动作（此处不再报数，报数已提前到动作开始前）
       runner.completedRepsInSet += 1;
-      const countText = exercise.type === 'time'
-        ? `${runner.completedRepsInSet}次`
-        : String(runner.completedRepsInSet);
-      speakCount(countText);
       const targetReps = currentRunnerItem().target;
       const inputEl = $('actualValue');
       if (inputEl && exercise.type !== 'side') inputEl.value = runner.completedRepsInSet;
@@ -1781,36 +1788,285 @@ async function exportDeepseek() {
 
   const text = lines.join('\n');
   const copied = await copyText(text);
-  showToast(copied ? '训练数据已复制，正在尝试打开 DeepSeek App…' : '复制受限，请手动粘贴已选中的文本');
-  openDeepseek();
+  showToast(copied ? '训练数据已复制，正在调起系统分享…' : '复制受限，请在分享面板中手动选择文本');
+  openDeepseek(text);
 }
 
-// 优先唤起 DeepSeek App，1.6 秒内没离开页面（说明没装或唤起失败）则回退网页版
-function openDeepseek() {
-  const ua = navigator.userAgent || '';
-  const isAndroid = /Android/i.test(ua);
-  let leftPage = false;
-  const onHide = () => { if (document.hidden) leftPage = true; };
-  document.addEventListener('visibilitychange', onHide);
+// 优先调起系统分享面板：DeepSeek 支持接收文本分享，点一下即把数据带入输入框
+// 绝不再跳 Google Play 商店页（国内不可用）
+function openDeepseek(text) {
+  if (navigator.share) {
+    navigator.share({
+      title: 'FitLog 训练数据',
+      text: text || ''
+    }).then(() => {
+      showToast('已调起系统分享，请在面板中选择 DeepSeek');
+    }).catch(err => {
+      if (err && err.name === 'AbortError') {
+        showToast('已取消分享，数据仍在剪贴板中');
+      } else {
+        showToast('系统分享不可用，已为你打开网页版');
+        openDeepseekWeb();
+      }
+    });
+    return;
+  }
+  showToast('当前浏览器不支持系统分享，已打开网页版');
+  openDeepseekWeb();
+}
 
-  const fallbackWeb = () => {
-    document.removeEventListener('visibilitychange', onHide);
-    if (leftPage || document.hidden) return;
-    const opened = window.open('https://chat.deepseek.com/', '_blank');
-    if (opened) {
-      try { opened.opener = null; } catch (_) {}
-      showToast('未检测到 DeepSeek App，已打开网页版，请粘贴数据');
-    } else {
-      showToast('请手动打开 DeepSeek App 或网页版粘贴数据');
+function openDeepseekWeb() {
+  const opened = window.open('https://chat.deepseek.com/', '_blank');
+  if (opened) {
+    try { opened.opener = null; } catch (_) {}
+  } else {
+    showToast('弹窗被拦截，请手动访问 chat.deepseek.com 并粘贴');
+  }
+}
+
+async /* ===================== 训练提醒 ===================== */
+function loadReminders() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(REMINDERS_KEY) || '{}');
+    if (saved && Array.isArray(saved.rules)) reminderState.rules = saved.rules;
+  } catch (_) {}
+}
+
+function saveReminders() {
+  try { localStorage.setItem(REMINDERS_KEY, JSON.stringify({ rules: reminderState.rules })); } catch (_) {}
+}
+
+const firedKey = (rule, dateKey, hour) => `fitlog-fired-${rule.id}-${dateKey}${hour != null ? '-' + hour : ''}`;
+
+function wasFired(rule, dateKey, hour) {
+  try { return localStorage.getItem(firedKey(rule, dateKey, hour)) === '1'; } catch (_) { return false; }
+}
+
+function markFired(rule, dateKey, hour) {
+  try {
+    const key = firedKey(rule, dateKey, hour);
+    localStorage.setItem(key, '1');
+    setTimeout(() => { try { localStorage.removeItem(key); } catch (_) {} }, 26 * 3600 * 1000);
+  } catch (_) {}
+}
+
+function parseHHMM(s) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(s || '').trim());
+  if (!m) return null;
+  return { h: Math.min(23, Math.max(0, +m[1])), min: Math.min(59, Math.max(0, +m[2])) };
+}
+
+function fireReminderNotification(rule) {
+  const title = 'FitLog 训练提醒';
+  const body = rule.text || '该动一动啦！';
+  unlockAudio();
+  playRestEndCue();
+  speak(rule.text || '该起来活动一下了', true, 'key');
+  if ('Notification' in window && Notification.permission === 'granted' && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.ready.then(reg => {
+      if (reg.showNotification) {
+        reg.showNotification(title, { body, tag: 'fitlog-reminder-' + rule.id, icon: './icon-192.png' }).catch(() => {});
+      }
+    }).catch(() => {});
+  } else if ('Notification' in window && Notification.permission === 'granted') {
+    try { new Notification(title, { body, icon: './icon-192.png' }); } catch (_) {}
+  }
+  showToast(body);
+}
+
+function checkReminders() {
+  const now = new Date();
+  const dateKey = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+  const dateIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  reminderState.rules.forEach(rule => {
+    if (!rule.enabled) return;
+    if ((rule.type === 'daily' || rule.type === 'once') && hhmm === rule.time) {
+      if (rule.type === 'once' && rule.date && rule.date !== dateIso) return;
+      if (!wasFired(rule, dateKey)) {
+        markFired(rule, dateKey);
+        fireReminderNotification(rule);
+      }
+    } else if (rule.type === 'hourly' && now.getMinutes() <= 1) {
+      const s = parseHHMM(rule.start), e = parseHHMM(rule.end);
+      if (s && e && now.getHours() >= s.h && now.getHours() <= e.h && !wasFired(rule, dateKey, now.getHours())) {
+        markFired(rule, dateKey, now.getHours());
+        fireReminderNotification(rule);
+      }
     }
-  };
+  });
+}
 
-  // 安卓用 intent 指向官方包名，iOS/其他用 URL Scheme
-  const target = isAndroid
-    ? 'intent://chat#Intent;scheme=deepseek;package=com.deepseek.chat;end'
-    : 'deepseek://';
-  try { window.location.href = target; } catch (_) {}
-  setTimeout(fallbackWeb, 1600);
+function startReminderTicker() {
+  if (reminderState.tickTimer) clearInterval(reminderState.tickTimer);
+  checkReminders();
+  reminderState.tickTimer = setInterval(checkReminders, 30000);
+}
+
+function upcomingTriggerTimes(rule, from, hoursAhead) {
+  const out = [];
+  const limit = from.getTime() + hoursAhead * 3600 * 1000;
+  if (rule.type === 'daily' || rule.type === 'once') {
+    const t = parseHHMM(rule.time);
+    if (!t) return out;
+    for (let d = 0; d <= 2; d++) {
+      const date = new Date(from.getFullYear(), from.getMonth(), from.getDate() + d, t.h, t.min, 0, 0);
+      const ts = date.getTime();
+      if (ts <= from.getTime() + 1000 || ts > limit) continue;
+      if (rule.type === 'once') {
+        const ds = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+        if (rule.date && rule.date !== ds) continue;
+      }
+      out.push(ts);
+    }
+  } else if (rule.type === 'hourly') {
+    const s = parseHHMM(rule.start), e = parseHHMM(rule.end);
+    if (!s || !e) return out;
+    for (let d = 0; d <= 2; d++) {
+      for (let h = s.h; h <= e.h; h++) {
+        const date = new Date(from.getFullYear(), from.getMonth(), from.getDate() + d, h, 0, 0, 0);
+        const ts = date.getTime();
+        if (ts > from.getTime() + 1000 && ts <= limit) out.push(ts);
+      }
+    }
+  }
+  return out;
+}
+
+// 增强：浏览器支持 Notification Triggers 时预约通知，App 关闭也能提醒
+async function scheduleNotificationTriggers() {
+  if (!('Notification' in window) || Notification.permission !== 'granted' || !('serviceWorker' in navigator)) return;
+  if (typeof window.TimestampTrigger !== 'function') return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const now = new Date();
+    for (const rule of reminderState.rules) {
+      if (!rule.enabled) continue;
+      for (const ts of upcomingTriggerTimes(rule, now, 24)) {
+        await reg.showNotification('FitLog 训练提醒', {
+          body: rule.text || '该动一动啦！',
+          tag: `fitlog-trigger-${rule.id}-${ts}`,
+          icon: './icon-192.png',
+          showTrigger: new window.TimestampTrigger(ts)
+        });
+      }
+    }
+  } catch (_) {}
+}
+
+async function requestNotifyPermission() {
+  if (!('Notification' in window)) { showToast('当前浏览器不支持系统通知'); return false; }
+  if (Notification.permission === 'granted') return true;
+  const perm = await Notification.requestPermission();
+  const ok = perm === 'granted';
+  showToast(ok ? '通知权限已开启' : '未获权限，提醒将只在App内显示');
+  return ok;
+}
+
+function updateReminderPermLabel() {
+  const el = $('reminderPermStatus');
+  if (!el) return;
+  if (!('Notification' in window)) { el.textContent = '浏览器不支持通知'; return; }
+  el.textContent = Notification.permission === 'granted'
+    ? '系统通知已开启'
+    : (Notification.permission === 'denied' ? '通知被拒绝，请在浏览器设置中开启' : '尚未开启系统通知');
+}
+
+function renderReminders() {
+  const list = $('reminderList');
+  if (!list) return;
+  if (!reminderState.rules.length) {
+    list.innerHTML = '<p class="muted small-text">还没有提醒。例如添加“每天 07:00 提醒拉伸”，或“9:00-17:00 每小时站起来活动”。</p>';
+    return;
+  }
+  list.innerHTML = reminderState.rules.map(r => {
+    let desc = '';
+    if (r.type === 'daily') desc = `每天 ${r.time}`;
+    else if (r.type === 'once') desc = `${r.date || '单次'} ${r.time}`;
+    else if (r.type === 'hourly') desc = `${r.start} - ${r.end} 每小时`;
+    return `<div class="reminder-row">
+      <input type="checkbox" class="reminder-enabled" data-id="${r.id}" ${r.enabled ? 'checked' : ''}>
+      <div class="reminder-info"><b>${escapeHtml(r.text || '训练提醒')}</b><small>${escapeHtml(desc)}</small></div>
+      <button class="small-btn reminder-test" data-id="${r.id}">试响</button>
+      <button class="small-btn danger-text reminder-del" data-id="${r.id}">删除</button>
+    </div>`;
+  }).join('');
+}
+
+function initReminders() {
+  loadReminders();
+  renderReminders();
+  updateReminderPermLabel();
+
+  const typeSel = $('reminderType');
+  const toggleFields = () => {
+    const onceBox = $('reminderOnceFields');
+    const hourlyBox = $('reminderHourlyFields');
+    const timeBox = $('reminderTimeField');
+    if (onceBox) onceBox.classList.toggle('hidden', typeSel?.value !== 'once');
+    if (hourlyBox) hourlyBox.classList.toggle('hidden', typeSel?.value !== 'hourly');
+    if (timeBox) timeBox.classList.toggle('hidden', typeSel?.value === 'hourly');
+  };
+  if (typeSel) typeSel.addEventListener('change', toggleFields);
+  toggleFields();
+
+  const addBtn = $('reminderAddBtn');
+  if (addBtn) addBtn.addEventListener('click', () => {
+    const type = typeSel?.value || 'daily';
+    const text = ($('reminderText')?.value || '').trim();
+    const rule = { id: makeId(), type, text: text || '该动一动啦，站起来活动一下！', enabled: true };
+    if (type === 'hourly') {
+      rule.start = $('reminderStart')?.value || '09:00';
+      rule.end = $('reminderEnd')?.value || '17:00';
+    } else {
+      rule.time = $('reminderTime')?.value || '07:00';
+      if (type === 'once') rule.date = $('reminderDate')?.value || '';
+    }
+    reminderState.rules.push(rule);
+    saveReminders();
+    renderReminders();
+    startReminderTicker();
+    scheduleNotificationTriggers();
+    showToast('提醒已添加');
+  });
+
+  const list = $('reminderList');
+  if (list) {
+    list.addEventListener('change', e => {
+      if (!e.target.classList.contains('reminder-enabled')) return;
+      const r = reminderState.rules.find(x => x.id === e.target.dataset.id);
+      if (!r) return;
+      r.enabled = e.target.checked;
+      saveReminders();
+      scheduleNotificationTriggers();
+      showToast(r.enabled ? '提醒已开启' : '提醒已暂停');
+    });
+    list.addEventListener('click', e => {
+      const testBtn = e.target.closest('.reminder-test');
+      const delBtn = e.target.closest('.reminder-del');
+      if (testBtn) {
+        const r = reminderState.rules.find(x => x.id === testBtn.dataset.id);
+        if (r) fireReminderNotification(r);
+      }
+      if (delBtn) {
+        reminderState.rules = reminderState.rules.filter(x => x.id !== delBtn.dataset.id);
+        saveReminders();
+        renderReminders();
+        scheduleNotificationTriggers();
+        showToast('提醒已删除');
+      }
+    });
+  }
+
+  const permBtn = $('reminderPermBtn');
+  if (permBtn) permBtn.addEventListener('click', async () => {
+    const ok = await requestNotifyPermission();
+    updateReminderPermLabel();
+    if (ok) scheduleNotificationTriggers();
+  });
+
+  startReminderTicker();
+  scheduleNotificationTriggers();
 }
 
 async function refreshCurrentPage() {
@@ -2095,6 +2351,7 @@ async function init() {
   initAudioUnlock();
   initPullRefresh();
   initCacheManager();
+  initReminders();
   bindEvents();
 
   // 系统声音列表通常是异步加载的，多次尝试填充音色下拉

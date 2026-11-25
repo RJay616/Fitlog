@@ -14,7 +14,7 @@
   <header class="topbar">
     <div class="brand"><div class="brand-mark">F</div><div><strong>FitLog</strong><small>我的私人运动教练</small></div></div>
     <div class="topbar-actions">
-      <span class="version-badge" id="appVersion">v1.3</span>
+      <span class="version-badge" id="appVersion">v1.4</span>
       <button id="installBtn" class="install-btn hidden" type="button">安装</button>
     </div>
   </header>
@@ -116,6 +116,34 @@
         <div class="cache-actions"><button id="btnScanCache" class="small-btn">重新扫描</button><button id="btnCleanCache" class="small-btn danger-text">清理所选缓存</button></div>
       </div>
       <div class="info-card">
+        <b>训练提醒</b>
+        <p>支持三种提醒：<strong>每天固定时间</strong>（如早起 7:00 练拉伸）、<strong>单次提醒</strong>、<strong>每小时提醒</strong>（如 9:00-17:00 每小时站起来活动）。需允许系统通知，App 开着或后台时更可靠。</p>
+        <p class="small-text">通知状态：<span id="reminderPermStatus">检查中…</span> <button id="reminderPermBtn" class="small-btn" type="button">开启系统通知</button></p>
+        <div class="voice-settings reminder-form">
+          <label>提醒类型
+            <select id="reminderType">
+              <option value="daily">每天固定时间</option>
+              <option value="once">单次提醒</option>
+              <option value="hourly">每小时提醒</option>
+            </select>
+          </label>
+          <label id="reminderTimeField">提醒时间
+            <input id="reminderTime" type="time" value="07:00">
+          </label>
+          <label id="reminderOnceFields" class="hidden">提醒日期
+            <input id="reminderDate" type="date">
+          </label>
+          <label id="reminderHourlyFields" class="hidden">起止时间
+            <span class="reminder-range"><input id="reminderStart" type="time" value="09:00"><span>至</span><input id="reminderEnd" type="time" value="17:00"></span>
+          </label>
+          <label>提醒内容
+            <input id="reminderText" type="text" placeholder="例如：起床啦，练套拉伸！">
+          </label>
+        </div>
+        <div class="cache-actions"><button id="reminderAddBtn" class="small-btn" type="button">添加提醒</button></div>
+        <div id="reminderList" class="reminder-list"></div>
+      </div>
+      <div class="info-card">
         <b>语音音色设置</b>
         <p>默认自动优选男声并压低音调。若不合适，可在这里手动挑一个更自然的系统声音并试听；设置会保存在本机。</p>
         <div class="voice-settings">
@@ -141,7 +169,7 @@
       </div>
       <div class="info-card">
         <b>版本信息</b>
-        <p>FitLog <span id="appVersionData">v1.3</span> · PWA · IndexedDB 本地存储（小版本 1.1、1.2…，大改版从 2.1 起）</p>
+        <p>FitLog <span id="appVersionData">v1.4</span> · PWA · IndexedDB 本地存储（小版本 1.1、1.2…，大改版从 2.1 起）</p>
         <p id="storageStatus">正在检查本地数据库……</p>
       </div>
     </section>
