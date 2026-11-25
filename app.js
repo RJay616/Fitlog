@@ -1,275 +1,119 @@
-/**
- * TaiChiFlow / FitLog 核心逻辑 v1.2
- *
- * 版本规范：
- *   - 小改动：1.1 → 1.2 → 1.3
- *   - 大改版：2.1 → 2.2
- *
- * 本次修复：
- *   1. 下拉刷新只刷新当前视图，不再整页重载跳回主页
- *   2. 版本号统一为 x.y
- *   3. 每个动作之间增加组间休息倒计时 + 滴滴提醒
- *   4. 语音播报增加队列看门狗 + 计数提示音兜底，减少断续/漏播
- *   5. 纯视频跟练：勾选后参数变灰失效，视频本地持久化
- *   6. 缓存清理有独立入口（首页快捷按钮 + 设置页）
- *   7. 一键复制数据并跳转 DeepSeek
- *   8. 退出界面/切后台时彻底关闭视频与声音
- */
+'use strict';
 
-const APP_VERSION = "1.2";
+// 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
+const APP_VERSION = '1.2';
+const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
-// 注意：动作数据 key 保持旧值，避免升级后用户已有编排丢失
-const STORAGE_KEY_ACTIONS = "taichiflow_actions_v1_1";
-const STORAGE_KEY_LOGS = "taichiflow_temp_logs";
-const VIEW_STORAGE_KEY = "taichiflow_last_view_v1_2";
+const DB_NAME = 'fitlog-db';
+const DB_VERSION = 2;
+const STORES = ['exercises', 'plans', 'sessions', 'meta'];
+const DEFAULT_CATEGORIES = ['臀腿', '腰腹', '胸', '背', '肩', '手臂', '核心', '臀部', '腿部', '全身', '其他'];
 
-const USEFUL_CACHE_PREFIX = "taichiflow-useful-v";
-const USELESS_CACHE_PREFIX = "taichiflow-useless-v";
-
-// 本地视频存放在 IndexedDB，刷新/重开页面后仍可跟练
-const MEDIA_DB_NAME = "taichiflow-media-v1_2";
-const MEDIA_STORE = "videos";
-
-const DEFAULT_ACTIONS = [
-  {
-    id: "act-1",
-    name: "八段锦 · 双手托天理三焦",
-    pureVideo: false,
-    duration: 20,
-    reps: 6,
-    rest: 8,
-    videoUrl: "",
-    videoName: "",
-    videoId: "",
-    videoSize: 0
-  },
-  {
-    id: "act-2",
-    name: "经络拉伸 · 疏通胆经与肩颈",
-    pureVideo: false,
-    duration: 25,
-    reps: 0,
-    rest: 10,
-    videoUrl: "",
-    videoName: "",
-    videoId: "",
-    videoSize: 0
-  },
-  {
-    id: "act-3",
-    name: "太极云手 · 调息收功",
-    pureVideo: false,
-    duration: 20,
-    reps: 5,
-    rest: 0,
-    videoUrl: "",
-    videoName: "",
-    videoId: "",
-    videoSize: 0
-  }
-];
-
-let actions = [];
-let currentViewId = "view-home";
-let playerState = {
-  active: false,
-  paused: false,
-  stepIndex: 0,
-  isResting: false,
-  remainingSec: 0,
-  currentRep: 0,
-  timerHandle: null
+const TEMPO_PRESETS = {
+  pushup: [
+    { label: '吸气 · 缓慢向下', seconds: 3, countOut: true, voice: '吸气，缓慢向下' },
+    { label: '呼气 · 用力上撑', seconds: 1, countOut: false, voice: '呼气，用力上撑' }
+  ],
+  kegel: [
+    { label: '呼气 · 盆底肌收缩', seconds: 3, countOut: true, voice: '呼气，收缩' },
+    { label: '吸气 · 彻底放松', seconds: 10, countOut: true, voice: '吸气，放松' }
+  ],
+  kickback: [
+    { label: '呼气 · 向后踢出', seconds: 1, countOut: false, voice: '呼气，后踢' },
+    { label: '顶峰 · 保持收缩', seconds: 2, countOut: true, voice: '保持' },
+    { label: '吸气 · 缓慢回收', seconds: 3, countOut: true, voice: '吸气，缓慢回收' }
+  ],
+  squat: [
+    { label: '吸气 · 屈髋下蹲', seconds: 3, countOut: true, voice: '吸气，下蹲' },
+    { label: '底部 · 稳定停顿', seconds: 1, countOut: false, voice: '保持稳定' },
+    { label: '呼气 · 发力站起', seconds: 1, countOut: false, voice: '呼气，站起' }
+  ]
 };
 
-// ==========================================
-// 初始化
-// ==========================================
-document.addEventListener("DOMContentLoaded", async () => {
-  initVersionDisplay();
-  registerServiceWorker();
-  initNavigationAndPullRefresh();
-  initAudio();
-  initActionForm();
-  initPlayerControls();
-  initCacheManager();
-  initDeepseekExport();
-  initAudioTestButtons();
+let db;
+let currentPage = 'home';
+let toastTimer;
+let deferredInstallPrompt = null;
+let runner = null;
+let timerHandle = null;
 
-  await loadActions();
-  renderRoutineList();
-  scanCacheSizes();
-});
+// 课程编辑器临时状态
+let draftPlanItems = []; // [{ exerciseId, sets, target, restSeconds }]
+// 动作详情弹窗当前状态
+let activeDetailExerciseId = null;
+let activeDetailTab = 'info';
+let activeChartMetric = 'primary';
+// 动作表单临时视频 Blob
+let draftExerciseVideoBlob = null;
+let draftVideoObjectUrl = null;
+let runnerVideoObjectUrl = null;
+let detailVideoObjectUrl = null;
+let wakeLockSentinel = null;
 
-function initVersionDisplay() {
-  const badge = document.getElementById("appVersionBadge");
-  const settingsVer = document.getElementById("settingsVersionText");
-  if (badge) badge.textContent = `v${APP_VERSION}`;
-  if (settingsVer) settingsVer.textContent = `v${APP_VERSION}`;
-}
-
-function registerServiceWorker() {
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js").catch((err) => {
-      console.warn("Service Worker 注册跳过：", err);
-    });
-  }
-}
-
-// ==========================================
-// 需求1：下拉刷新不跳菜单，仅刷新当前内容
-// ==========================================
-function initNavigationAndPullRefresh() {
-  const navButtons = document.querySelectorAll(".nav-btn");
-
-  // 同时用 localStorage 和 URL Hash 记住当前菜单位置
-  const savedView = localStorage.getItem(VIEW_STORAGE_KEY) || "";
-  const hashView = window.location.hash.replace(/^#/, "");
-  const initialView =
-    [hashView, savedView].find((id) => id && document.getElementById(id)) || "view-home";
-  switchView(initialView, false, false);
-
-  navButtons.forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const target = btn.getAttribute("data-target");
-      switchView(target, true, true);
-    });
-  });
-
-  window.addEventListener("hashchange", () => {
-    const hash = window.location.hash.replace(/^#/, "");
-    if (hash && document.getElementById(hash)) {
-      switchView(hash, false, true);
-    }
-  });
-
-  // 从后台/浏览器往返缓存恢复时，清掉可能残留的视频声音
-  window.addEventListener("pageshow", (event) => {
-    if (event.persisted) {
-      stopAndCleanupVideo();
-      if (playerState.active) exitWorkout();
-      const restored = localStorage.getItem(VIEW_STORAGE_KEY) || "view-home";
-      if (document.getElementById(restored)) switchView(restored, false, false);
-    }
-  });
-
-  // 自定义下拉刷新：拦截浏览器原生整页刷新，只更新当前视图
-  const indicator = document.getElementById("pullIndicator");
-  let startY = 0;
-  let pulling = false;
-  let pullAmount = 0;
-
-  const isAtTop = () => {
-    const scroller = document.scrollingElement || document.documentElement;
-    return (window.scrollY || scroller.scrollTop || 0) <= 0;
-  };
-
-  const resetIndicator = () => {
-    if (!indicator) return;
-    indicator.classList.remove("visible");
-    indicator.style.height = "";
-    indicator.textContent = "下拉刷新当前页面...";
-  };
-
-  window.addEventListener(
-    "touchstart",
-    (event) => {
-      if (event.touches.length !== 1 || !isAtTop()) return;
-      startY = event.touches[0].clientY;
-      pulling = true;
-      pullAmount = 0;
-    },
-    { passive: true }
-  );
-
-  window.addEventListener(
-    "touchmove",
-    (event) => {
-      if (!pulling || !indicator) return;
-      const deltaY = event.touches[0].clientY - startY;
-
-      // 用户其实是向上正常滚动，退出下拉逻辑
-      if (deltaY <= 0 || !isAtTop()) {
-        pulling = false;
-        resetIndicator();
-        return;
-      }
-
-      // 阻止 Android Chrome 的原生下拉整页刷新
-      if (event.cancelable) event.preventDefault();
-
-      pullAmount = deltaY;
-      indicator.textContent = deltaY > 58 ? "松开刷新当前页面..." : "下拉刷新当前页面...";
-      indicator.style.height = `${Math.min(36, Math.round(deltaY / 2))}px`;
-      if (deltaY > 55) indicator.classList.add("visible");
-    },
-    { passive: false }
-  );
-
-  const finishPull = () => {
-    if (!pulling) {
-      resetIndicator();
-      return;
-    }
-    pulling = false;
-    if (pullAmount > 55) refreshCurrentViewOnly();
-    pullAmount = 0;
-    resetIndicator();
-  };
-
-  window.addEventListener("touchend", finishPull, { passive: true });
-  window.addEventListener("touchcancel", finishPull, { passive: true });
-}
-
-function switchView(viewId, updateHash = true, persist = true) {
-  if (!viewId || !document.getElementById(viewId)) return;
-
-  // 离开训练主页时，结束训练并彻底关闭音视频
-  if (viewId !== "view-home") {
-    if (playerState.active) exitWorkout();
-    stopAndCleanupVideo();
-  }
-
-  currentViewId = viewId;
-  document.querySelectorAll(".view-section").forEach((section) => {
-    section.classList.toggle("active", section.id === viewId);
-  });
-  document.querySelectorAll(".nav-btn").forEach((btn) => {
-    btn.classList.toggle("active", btn.getAttribute("data-target") === viewId);
-  });
-
-  if (updateHash) {
-    history.replaceState(null, "", `#${viewId}`);
-  }
-  if (persist) {
-    localStorage.setItem(VIEW_STORAGE_KEY, viewId);
-  }
-  if (viewId === "view-settings") {
-    scanCacheSizes();
-  }
-}
-
-function refreshCurrentViewOnly() {
-  const nowStr = new Date().toLocaleTimeString("zh-CN", { hour12: false });
-
-  if (currentViewId === "view-home") {
-    renderRoutineList();
-    const stamp = document.getElementById("refreshTimestamp");
-    if (stamp) stamp.textContent = `已刷新 (${nowStr})`;
-  } else if (currentViewId === "view-builder") {
-    // 保留表单里正在输入的内容，不做任何重置
-  } else if (currentViewId === "view-settings") {
-    scanCacheSizes();
-  }
-
-  showToast("已刷新当前界面内容");
-}
-
-// ==========================================
-// 需求3 & 4：提示音解锁、语音队列与计数兜底
-// ==========================================
+// 音频与语音状态
 let audioCtx = null;
 let audioUnlocked = false;
+const speechQueue = [];
+let isSpeaking = false;
+let speechWatchdog = null;
+let speechFinish = null;
 
+const $ = id => document.getElementById(id);
+const makeId = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+const nowIso = () => new Date().toISOString();
+const dateLabel = value => new Date(value).toLocaleString('zh-CN', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+const shortDateLabel = value => {
+  const d = new Date(value);
+  return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
+};
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+const clampInt = (value, min, max, fallback) => {
+  const n = Number.parseInt(value, 10);
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+};
+
+function openDatabase() {
+  return new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) return reject(new Error('当前浏览器不支持 IndexedDB'));
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains('exercises')) database.createObjectStore('exercises', { keyPath: 'id' });
+      if (!database.objectStoreNames.contains('plans')) database.createObjectStore('plans', { keyPath: 'id' });
+      if (!database.objectStoreNames.contains('sessions')) database.createObjectStore('sessions', { keyPath: 'id' });
+      if (!database.objectStoreNames.contains('meta')) database.createObjectStore('meta', { keyPath: 'key' });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('数据库打开失败'));
+  });
+}
+
+function storeRequest(storeName, mode, operation) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, mode);
+    const store = tx.objectStore(storeName);
+    let req;
+    try { req = operation(store); } catch (error) { reject(error); return; }
+    tx.oncomplete = () => resolve(req ? req.result : undefined);
+    tx.onerror = () => reject(tx.error || new Error('数据库操作失败'));
+    tx.onabort = () => reject(tx.error || new Error('数据库操作已取消'));
+  });
+}
+
+const getAll = name => storeRequest(name, 'readonly', store => store.getAll());
+const put = (name, value) => storeRequest(name, 'readwrite', store => store.put(value));
+const remove = (name, id) => storeRequest(name, 'readwrite', store => store.delete(id));
+const clearStore = name => storeRequest(name, 'readwrite', store => store.clear());
+
+function showToast(message) {
+  const toast = $('toast');
+  toast.textContent = message;
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 2400);
+}
+
+/* ===================== 音频：提示音 + 语音队列 ===================== */
 function ensureAudioContext() {
   try {
     if (!audioCtx) {
@@ -277,12 +121,9 @@ function ensureAudioContext() {
       if (!AudioContextClass) return null;
       audioCtx = new AudioContextClass();
     }
-    if (audioCtx.state === "suspended") {
-      audioCtx.resume().catch(() => {});
-    }
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
     return audioCtx;
-  } catch (e) {
-    console.warn("音频上下文初始化失败：", e);
+  } catch (_) {
     return null;
   }
 }
@@ -293,78 +134,49 @@ function unlockAudio() {
   ensureAudioContext();
 }
 
-function initAudio() {
-  // 首次用户手势时解锁 Web Audio，避免定时器里播放被浏览器拦截
-  ["touchend", "click", "keydown"].forEach((evt) => {
-    window.addEventListener(evt, unlockAudio, {
-      once: true,
-      passive: evt !== "keydown"
-    });
+function initAudioUnlock() {
+  ['touchend', 'click', 'keydown'].forEach(evt => {
+    window.addEventListener(evt, unlockAudio, { once: true, passive: evt !== 'keydown' });
   });
 }
 
 function playBeep(freq = 880, durationMs = 160, count = 1, gapMs = 200) {
   const ctx = ensureAudioContext();
   if (!ctx) return;
-
   try {
     for (let i = 0; i < count; i += 1) {
       const start = ctx.currentTime + 0.02 + (i * gapMs) / 1000;
       const end = start + durationMs / 1000;
-
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.type = "sine";
+      osc.type = 'sine';
       osc.frequency.setValueAtTime(freq, start);
-
       gain.gain.setValueAtTime(0.0001, start);
       gain.gain.exponentialRampToValueAtTime(0.32, start + 0.02);
       gain.gain.exponentialRampToValueAtTime(0.0001, end);
-
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.start(start);
       osc.stop(end + 0.02);
     }
-  } catch (e) {
-    console.warn("蜂鸣提示音播放受限：", e);
-  }
+  } catch (_) {}
 }
 
-function playCountCue() {
-  // 计数时双短音，即使语音漏播也能听清节奏
-  playBeep(1180, 80, 2, 130);
-}
-
-function playRestStartCue() {
-  playBeep(660, 180, 1);
-}
-
-function playRestTickCue() {
-  playBeep(980, 130, 1);
-}
-
-function playRestEndCue() {
-  playBeep(1200, 220, 3, 160);
-}
-
-const speechQueue = [];
-let isSpeaking = false;
-let speechWatchdog = null;
-let speechFinish = null;
+function playCountCue() { playBeep(1180, 80, 2, 130); }
+function playRestStartCue() { playBeep(660, 180, 1); }
+function playRestTickCue() { playBeep(980, 130, 1); }
+function playRestEndCue() { playBeep(1200, 220, 3, 160); }
 
 function pickLocalVoice() {
-  if (!("speechSynthesis" in window)) return null;
+  if (!('speechSynthesis' in window)) return null;
   const voices = window.speechSynthesis.getVoices() || [];
-  const zhVoices = voices.filter((v) => /zh|cmn|Chinese/i.test(v.lang));
-  return zhVoices.find((v) => v.localService) || zhVoices[0] || null;
+  const zhVoices = voices.filter(v => /zh|cmn|Chinese/i.test(v.lang));
+  return zhVoices.find(v => v.localService) || zhVoices[0] || null;
 }
 
 function cancelSpeech() {
-  if ("speechSynthesis" in window) {
-    try {
-      window.speechSynthesis.cancel();
-    } catch (e) {}
+  if ('speechSynthesis' in window) {
+    try { window.speechSynthesis.cancel(); } catch (_) {}
   }
   if (speechWatchdog) clearTimeout(speechWatchdog);
   speechWatchdog = null;
@@ -373,24 +185,25 @@ function cancelSpeech() {
   isSpeaking = false;
 }
 
-function speakText(text, interrupt = false) {
-  if (!("speechSynthesis" in window)) return;
-  const message = String(text || "").trim();
-  if (!message) return;
-
+// 队列播报：默认不打断，避免每秒报数时互相 cancel 导致断续
+function speak(text, interrupt = false) {
+  if (!('speechSynthesis' in window) || !text) return;
   if (interrupt) cancelSpeech();
-
-  speechQueue.push(message);
+  speechQueue.push(String(text));
   processSpeechQueue();
+}
+
+function speakCount(text) {
+  playCountCue();
+  speak(text, false);
 }
 
 function processSpeechQueue() {
   if (isSpeaking || speechQueue.length === 0) return;
-  if (!("speechSynthesis" in window)) return;
+  if (!('speechSynthesis' in window)) return;
 
   const text = speechQueue.shift();
   let settled = false;
-
   const finish = () => {
     if (settled) return;
     settled = true;
@@ -398,767 +211,1340 @@ function processSpeechQueue() {
     speechWatchdog = null;
     speechFinish = null;
     isSpeaking = false;
-    // 稍作间隔，避免 Android TTS 连续 cancel/speak 时卡住
     setTimeout(processSpeechQueue, 120);
   };
 
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = "zh-CN";
-  utterance.rate = 0.95;
-  utterance.pitch = 1;
+  utterance.lang = 'zh-CN';
+  utterance.rate = 0.96;
   utterance.volume = 1;
-
   const voice = pickLocalVoice();
   if (voice) utterance.voice = voice;
-
   utterance.onend = finish;
   utterance.onerror = finish;
 
   isSpeaking = true;
   speechFinish = finish;
-
-  // 看门狗：部分安卓 TTS 不会回调 onend，超过预估时长后强制放行队列
   const estimatedMs = Math.min(9000, 1400 + text.length * 260);
   speechWatchdog = setTimeout(() => {
-    try {
-      window.speechSynthesis.cancel();
-    } catch (e) {}
+    try { window.speechSynthesis.cancel(); } catch (_) {}
     if (speechFinish) speechFinish();
   }, estimatedMs);
 
+  try { window.speechSynthesis.speak(utterance); } catch (_) { finish(); }
+}
+
+if ('speechSynthesis' in window) {
+  window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+}
+
+/* ===================== 视频声音清理 ===================== */
+function pauseAllVideos() {
+  document.querySelectorAll('video').forEach(video => {
+    try { video.pause(); } catch (_) {}
+  });
+}
+
+function stopAllVideos() {
+  document.querySelectorAll('video').forEach(video => {
+    try {
+      video.onended = null;
+      video.onerror = null;
+      video.pause();
+      video.muted = true;
+      video.removeAttribute('src');
+      video.load();
+    } catch (_) {}
+  });
+  [runnerVideoObjectUrl, detailVideoObjectUrl].forEach(url => {
+    if (url) URL.revokeObjectURL(url);
+  });
+  runnerVideoObjectUrl = null;
+  detailVideoObjectUrl = null;
+}
+
+async function requestWakeLock() {
   try {
-    window.speechSynthesis.speak(utterance);
-  } catch (e) {
-    console.warn("语音合成调用失败：", e);
-    finish();
+    if ('wakeLock' in navigator && !wakeLockSentinel) {
+      wakeLockSentinel = await navigator.wakeLock.request('screen');
+    }
+  } catch (_) {}
+}
+
+async function releaseWakeLock() {
+  try {
+    if (wakeLockSentinel) {
+      await wakeLockSentinel.release();
+      wakeLockSentinel = null;
+    }
+  } catch (_) {}
+}
+
+function openDialog(id) { const dialog = $(id); if (dialog && !dialog.open) dialog.showModal(); }
+function closeDialog(id) { const dialog = $(id); if (dialog && dialog.open) dialog.close(); }
+
+// 分类管理
+async function getCategories() {
+  const metaList = await getAll('meta');
+  const saved = metaList.find(m => m.key === 'categories')?.value || [];
+  const exercises = await getAll('exercises');
+  const fromEx = exercises.map(e => e.muscle).filter(Boolean);
+  return Array.from(new Set([...DEFAULT_CATEGORIES, ...saved, ...fromEx]));
+}
+
+async function addCustomCategory(rawName) {
+  const name = String(rawName || '').trim();
+  if (!name) return null;
+  const cats = await getCategories();
+  if (!cats.includes(name)) {
+    cats.push(name);
+    await put('meta', { key: 'categories', value: cats });
+  }
+  await populateCategorySelects(name);
+  return name;
+}
+
+async function populateCategorySelects(selectedMuscle = null) {
+  const cats = await getCategories();
+  const filterEl = $('muscleFilter');
+  const prevFilter = filterEl.value || '全部';
+  filterEl.innerHTML = `<option value="全部">全部分类</option>${cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')}`;
+  filterEl.value = cats.includes(prevFilter) || prevFilter === '全部' ? prevFilter : '全部';
+
+  const exSelect = $('exerciseMuscle');
+  const curEx = selectedMuscle || exSelect.value || '臀腿';
+  exSelect.innerHTML = cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+  exSelect.value = cats.includes(curEx) ? curEx : cats[0];
+
+  const qcSelect = $('qcMuscle');
+  if (qcSelect) {
+    const curQc = qcSelect.value || '臀腿';
+    qcSelect.innerHTML = cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+    qcSelect.value = cats.includes(curQc) ? curQc : cats[0];
   }
 }
 
-if ("speechSynthesis" in window) {
-  window.speechSynthesis.onvoiceschanged = () => {
-    // 触发系统语音列表加载，后续优先选本地中文声音
-    window.speechSynthesis.getVoices();
+async function seedData() {
+  const exercises = await getAll('exercises');
+  if (exercises.length) return;
+  const samples = [
+    {
+      name: '俯卧撑', muscle: '胸', type: 'reps',
+      notes: '双手略宽于肩，身体保持一条直线。下降时控制速度，推起时呼气，避免塌腰或耸肩。',
+      cue: '注意核心收紧，吸气缓慢下放，呼气有力推起！',
+      prepSeconds: 5,
+      defaultTarget: { sets: 3, target: 12, weight: 0, restSeconds: 45 },
+      tempoPhases: TEMPO_PRESETS.pushup
+    },
+    {
+      name: '凯格尔收缩', muscle: '腰腹', type: 'time',
+      notes: '仰卧或坐姿均可，保持腹部与臀部自然放松，专注盆底肌向内向上收紧与彻底放松。',
+      cue: '呼气时收缩盆底肌，吸气时彻底放松，不要憋气！',
+      prepSeconds: 5,
+      defaultTarget: { sets: 3, target: 30, weight: 0, restSeconds: 30 },
+      tempoPhases: TEMPO_PRESETS.kegel
+    },
+    {
+      name: '弹力带后踢', muscle: '臀腿', type: 'side',
+      notes: '骨盆保持稳定，核心微收，臀部发力向后上方踢出，避免腰部代偿甩动。',
+      cue: '顶峰保持收紧，回程缓慢控制，绝不用腰借力！',
+      prepSeconds: 5,
+      defaultTarget: { sets: 3, target: 15, weight: 0, restSeconds: 45 },
+      tempoPhases: TEMPO_PRESETS.kickback
+    },
+    {
+      name: '徒手深蹲', muscle: '臀腿', type: 'reps',
+      notes: '双脚与肩同宽，膝盖朝脚尖方向，臀部向后向下坐，脊柱保持中立。',
+      cue: '注意背部挺直，下蹲吸气，站起呼气，膝盖不要内扣！',
+      prepSeconds: 5,
+      defaultTarget: { sets: 4, target: 15, weight: 0, restSeconds: 60 },
+      tempoPhases: TEMPO_PRESETS.squat
+    },
+    {
+      name: '臀桥', muscle: '臀腿', type: 'reps',
+      notes: '仰卧屈膝，脚掌踩稳地面，顶起髋部时夹紧臀部，避免腰部过度反弓。',
+      cue: '顶起时呼气并收紧臀部，下放时控制节奏吸气！',
+      prepSeconds: 5,
+      defaultTarget: { sets: 3, target: 15, weight: 0, restSeconds: 45 },
+      tempoPhases: []
+    },
+    {
+      name: '平板支撑', muscle: '腰腹', type: 'time',
+      notes: '肘部位于肩膀正下方，头、背、髋保持自然直线，不塌腰也不撅臀。',
+      cue: '保持均匀呼吸，不要憋气，核心持续发力！',
+      prepSeconds: 5,
+      defaultTarget: { sets: 3, target: 40, weight: 0, restSeconds: 45 },
+      tempoPhases: []
+    }
+  ];
+  for (const s of samples) {
+    await put('exercises', {
+      id: makeId(),
+      name: s.name,
+      muscle: s.muscle,
+      type: s.type,
+      notes: s.notes,
+      cue: s.cue,
+      prepSeconds: s.prepSeconds,
+      defaultTarget: s.defaultTarget,
+      tempoPhases: s.tempoPhases,
+      videoUrl: '',
+      videoBlob: null,
+      createdAt: nowIso(),
+      builtIn: true
+    });
+  }
+}
+
+function navigate(page, options = {}) {
+  const { persist = true, scroll = true } = options;
+  if (!document.getElementById(`page-${page}`)) page = 'home';
+
+  currentPage = page;
+  document.querySelectorAll('.page').forEach(el => el.classList.toggle('active', el.id === `page-${page}`));
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === page));
+  if (page === 'home') renderHome();
+  if (page === 'exercises') renderExercises();
+  if (page === 'plans') renderPlans();
+  if (page === 'history') renderHistory();
+  if (page === 'data') {
+    updateStorageStatus();
+    scanCacheSizes();
+  }
+  if (persist) localStorage.setItem(PAGE_STORAGE_KEY, page);
+  if (scroll) window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function restoreSavedPage() {
+  const saved = localStorage.getItem(PAGE_STORAGE_KEY);
+  if (saved && document.getElementById(`page-${saved}`)) {
+    navigate(saved, { persist: false, scroll: false });
+  }
+}
+
+/* ===================== 下拉刷新：只刷新当前页，不回首页 ===================== */
+function initPullRefresh() {
+  const indicator = $('pullIndicator');
+  let startY = 0;
+  let pulling = false;
+  let pullAmount = 0;
+
+  const atTop = () => {
+    const scroller = document.scrollingElement || document.documentElement;
+    return (window.scrollY || scroller.scrollTop || 0) <= 0;
   };
-}
+  const reset = () => {
+    if (!indicator) return;
+    indicator.classList.remove('show');
+    indicator.style.height = '';
+    indicator.textContent = '下拉刷新当前页面...';
+  };
 
-function initAudioTestButtons() {
-  const beepBtn = document.getElementById("btnTestBeep");
-  const voiceBtn = document.getElementById("btnTestVoice");
+  window.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1 || !atTop()) return;
+    startY = e.touches[0].clientY;
+    pulling = true;
+    pullAmount = 0;
+  }, { passive: true });
 
-  if (beepBtn) {
-    beepBtn.addEventListener("click", () => {
-      unlockAudio();
-      playBeep(880, 160, 2);
-      showToast("已触发滴滴提示音");
-    });
-  }
-
-  if (voiceBtn) {
-    voiceBtn.addEventListener("click", () => {
-      unlockAudio();
-      const voice = pickLocalVoice();
-      const source = voice && voice.localService ? "本地语音" : "系统语音";
-      speakText(`${source}测试开始。第1次，第2次，第3次。`, true);
-      playCountCue();
-      showToast(`正在使用${source}播报，请检查音量`);
-    });
-  }
-}
-
-// ==========================================
-// 需求5：动作元件 + 纯视频跟练 + 本地视频持久化
-// ==========================================
-async function loadActions() {
-  let raw;
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY_ACTIONS);
-    raw = saved ? JSON.parse(saved) : DEFAULT_ACTIONS.map((item) => ({ ...item }));
-    if (!Array.isArray(raw)) raw = DEFAULT_ACTIONS.map((item) => ({ ...item }));
-  } catch (e) {
-    raw = DEFAULT_ACTIONS.map((item) => ({ ...item }));
-  }
-
-  actions = raw.map((item, index) => ({
-    id: item.id || `act-${Date.now()}-${index}`,
-    name: item.name || `未命名动作 ${index + 1}`,
-    pureVideo: !!item.pureVideo,
-    duration: Number(item.duration) || 30,
-    reps: Math.max(0, Number(item.reps) || 0),
-    // 老数据没有 rest 字段时，默认补 10 秒休息（最后一个动作不休息）
-    rest:
-      item.rest === undefined
-        ? index < raw.length - 1
-          ? 10
-          : 0
-        : Math.max(0, Number(item.rest) || 0),
-    videoUrl: item.videoUrl || "",
-    videoName: item.videoName || "",
-    videoId: item.videoId || "",
-    videoSize: Number(item.videoSize) || 0
-  }));
-
-  await hydrateVideoUrls();
-}
-
-function saveActions() {
-  const serializable = actions.map((item) => ({
-    ...item,
-    // blob URL 只在当前会话有效，刷新后通过 IndexedDB 重新生成
-    videoUrl: item.videoUrl && item.videoUrl.startsWith("blob:") ? "" : item.videoUrl
-  }));
-  localStorage.setItem(STORAGE_KEY_ACTIONS, JSON.stringify(serializable));
-}
-
-let mediaDbPromise = null;
-
-function openMediaDb() {
-  if (mediaDbPromise) return mediaDbPromise;
-
-  mediaDbPromise = new Promise((resolve, reject) => {
-    if (!("indexedDB" in window)) {
-      reject(new Error("当前浏览器不支持 IndexedDB"));
+  window.addEventListener('touchmove', e => {
+    if (!pulling || !indicator) return;
+    const deltaY = e.touches[0].clientY - startY;
+    if (deltaY <= 0 || !atTop()) {
+      pulling = false;
+      reset();
       return;
     }
-    const request = indexedDB.open(MEDIA_DB_NAME, 1);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(MEDIA_STORE)) {
-        db.createObjectStore(MEDIA_STORE);
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("打开视频数据库失败"));
-  });
+    if (e.cancelable) e.preventDefault();
+    pullAmount = deltaY;
+    indicator.textContent = deltaY > 58 ? '松开刷新当前页面...' : '下拉刷新当前页面...';
+    indicator.style.height = `${Math.min(36, Math.round(deltaY / 2))}px`;
+    if (deltaY > 55) indicator.classList.add('show');
+  }, { passive: false });
 
-  return mediaDbPromise;
-}
-
-function saveVideoBlob(id, file) {
-  return openMediaDb().then(
-    (db) =>
-      new Promise((resolve, reject) => {
-        const tx = db.transaction(MEDIA_STORE, "readwrite");
-        tx.objectStore(MEDIA_STORE).put(file, id);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error || new Error("保存视频失败"));
-      })
-  );
-}
-
-function getVideoBlob(id) {
-  return openMediaDb().then(
-    (db) =>
-      new Promise((resolve, reject) => {
-        const tx = db.transaction(MEDIA_STORE, "readonly");
-        const request = tx.objectStore(MEDIA_STORE).get(id);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error || new Error("读取视频失败"));
-      })
-  );
-}
-
-function deleteVideoBlob(id) {
-  if (!id) return Promise.resolve();
-  return openMediaDb()
-    .then(
-      (db) =>
-        new Promise((resolve, reject) => {
-          const tx = db.transaction(MEDIA_STORE, "readwrite");
-          tx.objectStore(MEDIA_STORE).delete(id);
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => reject(tx.error || new Error("删除视频失败"));
-        })
-    )
-    .catch((e) => console.warn("删除本地视频失败：", e));
-}
-
-function clearAllVideoBlobs() {
-  return openMediaDb()
-    .then(
-      (db) =>
-        new Promise((resolve, reject) => {
-          const tx = db.transaction(MEDIA_STORE, "readwrite");
-          tx.objectStore(MEDIA_STORE).clear();
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => reject(tx.error || new Error("清空视频库失败"));
-        })
-    )
-    .catch((e) => console.warn("清空本地视频库失败：", e));
-}
-
-async function hydrateVideoUrls() {
-  for (const item of actions) {
-    if (!item.videoId) continue;
-    try {
-      const blob = await getVideoBlob(item.videoId);
-      if (blob) item.videoUrl = URL.createObjectURL(blob);
-    } catch (e) {
-      console.warn(`动作「${item.name}」的视频恢复失败：`, e);
+  const finish = () => {
+    if (!pulling) { reset(); return; }
+    pulling = false;
+    if (pullAmount > 55) {
+      refreshCurrentPage();
+      showToast('已刷新当前页面内容');
     }
-  }
-}
-
-function initActionForm() {
-  const form = document.getElementById("actionForm");
-  const chkPureVideo = document.getElementById("chkPureVideoMode");
-  const paramGroupBox = document.getElementById("paramGroupBox");
-  if (!form || !chkPureVideo || !paramGroupBox) return;
-
-  const paramInputs = Array.from(paramGroupBox.querySelectorAll("input"));
-
-  const applyPureVideoMode = () => {
-    const isPure = chkPureVideo.checked;
-    paramGroupBox.classList.toggle("disabled-group", isPure);
-    paramInputs.forEach((input) => {
-      input.disabled = isPure;
-    });
+    pullAmount = 0;
+    reset();
   };
-
-  chkPureVideo.addEventListener("change", applyPureVideoMode);
-  applyPureVideoMode();
-
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-
-    const name = document.getElementById("inputActionName").value.trim();
-    const fileInput = document.getElementById("inputVideoFile");
-    const file = fileInput.files && fileInput.files[0];
-    const isPureVideo = chkPureVideo.checked;
-
-    if (isPureVideo && !file) {
-      showToast("纯视频跟练需要先选择一个视频文件");
-      return;
-    }
-
-    const videoId = file ? `vid-${Date.now()}` : "";
-    let videoUrl = "";
-    let videoName = "";
-
-    if (file) {
-      videoUrl = URL.createObjectURL(file);
-      videoName = file.name;
-      try {
-        await saveVideoBlob(videoId, file);
-      } catch (e) {
-        console.warn("视频持久化失败：", e);
-        showToast("视频仅本次会话可用，请检查浏览器存储权限");
-      }
-      appendTempLog(`加载本地视频：${file.name} (${Math.round(file.size / 1024)}KB)`);
-    }
-
-    const newAction = {
-      id: `act-${Date.now()}`,
-      name: name || "未命名气功动作",
-      pureVideo: isPureVideo,
-      duration: isPureVideo ? 0 : Math.max(5, Number(document.getElementById("inputDuration").value) || 30),
-      reps: isPureVideo ? 0 : Math.max(0, Number(document.getElementById("inputReps").value) || 0),
-      rest: isPureVideo ? 0 : Math.max(0, Number(document.getElementById("inputRest").value) || 10),
-      videoUrl,
-      videoName,
-      videoId,
-      videoSize: file ? file.size : 0
-    };
-
-    actions.push(newAction);
-    saveActions();
-    renderRoutineList();
-
-    form.reset();
-    applyPureVideoMode();
-
-    showToast(isPureVideo ? "纯视频动作已添加" : "动作元件已添加");
-    switchView("view-home", true);
-  });
+  window.addEventListener('touchend', finish, { passive: true });
+  window.addEventListener('touchcancel', finish, { passive: true });
 }
 
-function renderRoutineList() {
-  const listEl = document.getElementById("routineList");
-  if (!listEl) return;
-  listEl.innerHTML = "";
-
-  actions.forEach((item, index) => {
-    const li = document.createElement("li");
-    li.className = "routine-item";
-    li.innerHTML = `
-      <div>
-        <strong class="routine-name"></strong>
-        <div class="routine-meta"></div>
-      </div>
-      <button class="btn ghost small" type="button">删除</button>
-    `;
-
-    li.querySelector(".routine-name").textContent = `${index + 1}. ${item.name}`;
-
-    let metaText;
-    if (item.pureVideo) {
-      metaText = `纯视频跟练（参数已忽略）${item.videoName ? " · 视频：" + item.videoName : " · 未选择视频"}`;
-    } else {
-      const repText = item.reps > 0 ? `计数 ${item.reps} 次` : "仅计时";
-      const restText = item.rest > 0 ? `组间休息 ${item.rest} 秒` : "无组间休息";
-      const videoText = item.videoName ? ` · 视频：${item.videoName}` : "";
-      metaText = `时长 ${item.duration} 秒 · ${repText} · ${restText}${videoText}`;
-    }
-    li.querySelector(".routine-meta").textContent = metaText;
-
-    li.querySelector("button").addEventListener("click", async () => {
-      if (item.videoUrl && item.videoUrl.startsWith("blob:")) {
-        URL.revokeObjectURL(item.videoUrl);
-      }
-      if (item.videoId) await deleteVideoBlob(item.videoId);
-      actions = actions.filter((action) => action.id !== item.id);
-      saveActions();
-      renderRoutineList();
-      scanCacheSizes();
-      showToast("已移除该动作");
-    });
-
-    listEl.appendChild(li);
-  });
-}
-
-// ==========================================
-// 需求3 & 8：组间休息倒计时 + 视频彻底清理
-// ==========================================
-function initPlayerControls() {
-  const startBtn = document.getElementById("btnStartWorkout");
-  const exitBtn = document.getElementById("btnExitPlayer");
-  const pauseBtn = document.getElementById("btnPauseResume");
-  const prevBtn = document.getElementById("btnPrevStep");
-  const nextBtn = document.getElementById("btnNextStep");
-
-  if (startBtn) {
-    startBtn.addEventListener("click", () => {
-      if (actions.length === 0) {
-        showToast("请先添加至少一个动作元件");
-        return;
-      }
-      startWorkout();
-    });
+async function renderHome() {
+  const sessions = (await getAll('sessions')).sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
+  const now = new Date();
+  const startOfWeek = new Date(now);
+  const day = (now.getDay() + 6) % 7;
+  startOfWeek.setHours(0, 0, 0, 0);
+  startOfWeek.setDate(now.getDate() - day);
+  const weekly = sessions.filter(s => new Date(s.startedAt) >= startOfWeek);
+  const minutes = weekly.reduce((sum, s) => sum + (Number(s.durationSeconds) || 0), 0);
+  $('weekSessions').textContent = weekly.length;
+  $('weekMinutes').textContent = Math.round(minutes / 60);
+  $('totalSessions').textContent = sessions.length;
+  const recent = $('recentSessions');
+  if (!sessions.length) {
+    recent.className = 'list-card empty-state';
+    recent.textContent = '还没有训练记录，完成第一次训练后会显示在这里。';
+    return;
   }
-  if (exitBtn) exitBtn.addEventListener("click", () => exitWorkout());
-  if (pauseBtn) pauseBtn.addEventListener("click", () => togglePauseWorkout());
-  if (prevBtn) {
-    prevBtn.addEventListener("click", () => {
-      if (playerState.stepIndex > 0) runActionStep(playerState.stepIndex - 1);
-    });
+  recent.className = 'stack-list';
+  recent.innerHTML = sessions.slice(0, 3).map(sessionCardHtml).join('');
+}
+
+function sessionCardHtml(s) {
+  const names = (s.exercises || []).map(e => e.name).join('、');
+  return `<article class="item-card"><div class="session-date">${escapeHtml(dateLabel(s.startedAt))}</div><div class="session-title">${escapeHtml(s.planName || '自由训练')}</div><div class="session-meta">${Math.round((s.durationSeconds || 0) / 60)} 分钟 · ${(s.exercises || []).length} 个动作</div><div class="session-exercises">${escapeHtml(names || '无动作明细')}</div><div class="card-actions"><button class="small-btn" data-session-detail="${escapeHtml(s.id)}">查看详情</button></div></article>`;
+}
+
+// 动作库与编辑
+async function renderExercises() {
+  await populateCategorySelects();
+  const all = await getAll('exercises');
+  const query = $('exerciseSearch').value.trim().toLowerCase();
+  const muscle = $('muscleFilter').value;
+  const filtered = all
+    .filter(e => (muscle === '全部' || e.muscle === muscle) && (!query || `${e.name} ${e.muscle} ${e.notes || ''} ${e.cue || ''}`.toLowerCase().includes(query)))
+    .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+
+  $('exerciseList').innerHTML = filtered.length
+    ? filtered.map(e => {
+        const hasTempo = Array.isArray(e.tempoPhases) && e.tempoPhases.length > 0;
+        const hasVideo = Boolean(e.videoBlob || e.videoUrl);
+        return `<article class="item-card">
+          <div class="item-top">
+            <div>
+              <h3>${escapeHtml(e.name)}</h3>
+              <span class="tag">${escapeHtml(e.muscle)}</span>
+              <span class="tag">${typeLabel(e.type)}</span>
+              ${e.pureVideo ? `<span class="tag amber">纯视频跟练</span>` : ''}
+              ${hasTempo ? `<span class="tag green">节拍引导(${e.tempoPhases.length}段)</span>` : ''}
+              ${hasVideo ? `<span class="tag amber">含视频</span>` : ''}
+            </div>
+          </div>
+          <p>${escapeHtml(e.notes || '暂无动作要领')}</p>
+          <div class="card-actions">
+            <button class="small-btn blue" data-exercise-detail="${escapeHtml(e.id)}">详情与历史</button>
+            <button class="small-btn" data-edit-exercise="${escapeHtml(e.id)}">编辑</button>
+            <button class="small-btn" data-delete-exercise="${escapeHtml(e.id)}">删除</button>
+          </div>
+        </article>`;
+      }).join('')
+    : '<div class="list-card empty-state">没有找到动作。点击右上角“＋ 添加”创建自己的动作。</div>';
+}
+
+function typeLabel(type) {
+  return ({ reps: '次数型', weight: '负重型', time: '时间型', side: '左右侧型' })[type] || '次数型';
+}
+
+function setVideoPreviewSrc(src) {
+  if (draftVideoObjectUrl) {
+    URL.revokeObjectURL(draftVideoObjectUrl);
+    draftVideoObjectUrl = null;
   }
-  if (nextBtn) nextBtn.addEventListener("click", () => advanceNextStep());
-
-  document.addEventListener("visibilitychange", () => {
-    // 切到后台只暂停，不卸载视频；退出界面/关闭页面才做彻底清理
-    if (document.hidden) {
-      const videoEl = document.getElementById("actionVideo");
-      if (videoEl && !videoEl.paused) videoEl.pause();
-    }
-  });
-
-  window.addEventListener("pagehide", stopAndCleanupVideo);
-  window.addEventListener("beforeunload", stopAndCleanupVideo);
-}
-
-function clearPlayerTimer() {
-  if (playerState.timerHandle === null) return;
-  clearInterval(playerState.timerHandle);
-  clearTimeout(playerState.timerHandle);
-  playerState.timerHandle = null;
-}
-
-function stopAndCleanupVideo() {
-  const videoEl = document.getElementById("actionVideo");
-  const videoWrapper = document.getElementById("videoWrapper");
-
-  if (videoEl) {
-    try {
-      videoEl.onended = null;
-      videoEl.onerror = null;
-      videoEl.pause();
-      videoEl.muted = true;
-      videoEl.currentTime = 0;
-      videoEl.removeAttribute("src");
-      videoEl.load();
-    } catch (e) {
-      console.warn("清理视频播放器异常：", e);
-    }
+  const wrap = $('exerciseVideoPreviewWrap');
+  const video = $('exerciseVideoPreview');
+  if (!src) {
+    video.removeAttribute('src');
+    wrap.classList.add('hidden');
+    return;
   }
-  if (videoWrapper) videoWrapper.classList.add("hidden");
-}
-
-function startWorkout() {
-  unlockAudio();
-  if ("speechSynthesis" in window) {
-    try {
-      window.speechSynthesis.getVoices();
-    } catch (e) {}
-  }
-
-  playerState.active = true;
-  playerState.paused = false;
-  const panel = document.getElementById("playerPanel");
-  const pauseBtn = document.getElementById("btnPauseResume");
-  if (panel) panel.classList.remove("hidden");
-  if (pauseBtn) pauseBtn.textContent = "暂停";
-
-  runActionStep(0);
-}
-
-function exitWorkout(completed = false) {
-  if (!playerState.active) return;
-
-  clearPlayerTimer();
-  playerState.active = false;
-  playerState.paused = false;
-  playerState.isResting = false;
-  playerState.currentRep = 0;
-
-  cancelSpeech();
-  stopAndCleanupVideo();
-
-  const panel = document.getElementById("playerPanel");
-  if (panel) panel.classList.add("hidden");
-  showToast(completed ? "今日训练已完成，音视频已关闭" : "已退出训练并关闭所有音视频");
-}
-
-function togglePauseWorkout() {
-  if (!playerState.active) return;
-
-  playerState.paused = !playerState.paused;
-  const pauseBtn = document.getElementById("btnPauseResume");
-  const videoEl = document.getElementById("actionVideo");
-
-  if (playerState.paused) {
-    if (pauseBtn) pauseBtn.textContent = "继续";
-    if (videoEl && !videoEl.paused) videoEl.pause();
-    // 暂停时取消语音，避免后台继续播报
-    cancelSpeech();
+  if (src instanceof Blob) {
+    draftVideoObjectUrl = URL.createObjectURL(src);
+    video.src = draftVideoObjectUrl;
   } else {
-    if (pauseBtn) pauseBtn.textContent = "暂停";
-    if (videoEl && videoEl.src) videoEl.play().catch(() => {});
-    speakText("继续训练", true);
+    video.src = src;
   }
+  wrap.classList.remove('hidden');
 }
 
-function setPlayerTexts({ title, desc, mode, value, unit }) {
-  const map = {
-    playerActionTitle: title,
-    playerActionDesc: desc,
-    timerModeLabel: mode,
-    timerValue: value,
-    timerUnit: unit
-  };
-  Object.entries(map).forEach(([id, val]) => {
-    const el = document.getElementById(id);
-    if (el && val !== undefined) el.textContent = String(val);
+function applyPureVideoMode() {
+  const isPure = Boolean($('exercisePureVideo')?.checked);
+  const ids = [
+    'exerciseType', 'exDefaultSets', 'exDefaultTarget', 'exDefaultWeight',
+    'exDefaultRest', 'exPrepSeconds', 'tempoPresetSelect', 'addTempoPhaseBtn',
+    'exerciseNotes', 'exerciseCue'
+  ];
+  ids.forEach(id => {
+    const el = $(id);
+    if (el) el.disabled = isPure;
+  });
+  const boxIds = ['exDefaultSets', 'tempoPresetSelect'];
+  boxIds.forEach(id => {
+    const box = $(id)?.closest('.form-section-box');
+    if (box) box.classList.toggle('disabled-group', isPure);
   });
 }
 
-function runActionStep(index) {
-  clearPlayerTimer();
-  stopAndCleanupVideo();
-  cancelSpeech();
+function renderTempoPhaseEditor(phases = []) {
+  const list = $('tempoPhaseList');
+  if (!phases.length) {
+    list.innerHTML = '<div class="empty-state" style="padding:10px">未设置呼吸节拍，训练时将自由完成每组。可从上方选模板或点击下方添加阶段。</div>';
+    return;
+  }
+  list.innerHTML = phases.map((p, idx) => `
+    <div class="tempo-phase-row" data-phase-idx="${idx}">
+      <input type="text" class="tp-label" value="${escapeHtml(p.label || '')}" placeholder="如：吸气-向下">
+      <input type="number" class="tp-sec" min="1" max="120" value="${clampInt(p.seconds, 1, 120, 3)}" title="持续秒数">
+      <label class="tempo-count-toggle" title="按秒数报数 1,2,3...">
+        <input type="checkbox" class="tp-count" ${p.countOut ? 'checked' : ''}>报数
+      </label>
+      <button type="button" class="tempo-del-btn" data-remove-phase="${idx}" title="删除阶段">×</button>
+    </div>
+  `).join('');
+}
 
-  if (index >= actions.length) {
-    exitWorkout(true);
-    playBeep(1046, 220, 2, 200);
-    speakText("恭喜，今日全部训练已完成！", true);
+function collectTempoPhasesFromEditor() {
+  const rows = Array.from($('tempoPhaseList').querySelectorAll('.tempo-phase-row'));
+  return rows.map(row => {
+    const label = row.querySelector('.tp-label')?.value.trim() || '节拍阶段';
+    const seconds = clampInt(row.querySelector('.tp-sec')?.value, 1, 120, 3);
+    const countOut = Boolean(row.querySelector('.tp-count')?.checked);
+    return { label, seconds, countOut, voice: label };
+  });
+}
+
+async function openExerciseEditor(exercise = null) {
+  await populateCategorySelects(exercise?.muscle || '臀腿');
+  $('exerciseDialogTitle').textContent = exercise ? '编辑动作' : '添加动作';
+  $('exerciseId').value = exercise?.id || '';
+  $('exerciseName').value = exercise?.name || '';
+  $('exerciseMuscle').value = exercise?.muscle || $('exerciseMuscle').value;
+  $('exerciseType').value = exercise?.type || 'reps';
+  $('exDefaultSets').value = exercise?.defaultTarget?.sets ?? 3;
+  $('exDefaultTarget').value = exercise?.defaultTarget?.target ?? (exercise?.type === 'time' ? 30 : 12);
+  $('exDefaultWeight').value = exercise?.defaultTarget?.weight ?? 0;
+  $('exDefaultRest').value = exercise?.defaultTarget?.restSeconds ?? 45;
+  $('exerciseVideoFile').value = '';
+  $('exerciseVideoUrl').value = exercise?.videoUrl || '';
+  draftExerciseVideoBlob = exercise?.videoBlob || null;
+
+  if (draftExerciseVideoBlob) {
+    setVideoPreviewSrc(draftExerciseVideoBlob);
+  } else if (exercise?.videoUrl) {
+    setVideoPreviewSrc(exercise.videoUrl);
+  } else {
+    setVideoPreviewSrc(null);
+  }
+
+  $('exerciseNotes').value = exercise?.notes || '';
+  $('exerciseCue').value = exercise?.cue || '';
+  $('exPrepSeconds').value = exercise?.prepSeconds ?? 5;
+  $('exercisePureVideo').checked = Boolean(exercise?.pureVideo);
+  applyPureVideoMode();
+  $('tempoPresetSelect').value = '';
+  renderTempoPhaseEditor(exercise?.tempoPhases || []);
+  openDialog('exerciseDialog');
+}
+
+async function saveExercise(event) {
+  event.preventDefault();
+  const id = $('exerciseId').value || makeId();
+  const old = (await getAll('exercises')).find(e => e.id === id);
+  const name = $('exerciseName').value.trim();
+  const muscle = await addCustomCategory($('exerciseMuscle').value);
+  const type = $('exerciseType').value;
+  const videoUrl = $('exerciseVideoUrl').value.trim();
+
+  await put('exercises', {
+    id,
+    name,
+    muscle,
+    type,
+    notes: $('exerciseNotes').value.trim(),
+    cue: $('exerciseCue').value.trim(),
+    prepSeconds: clampInt($('exPrepSeconds').value, 0, 30, 5),
+    defaultTarget: {
+      sets: clampInt($('exDefaultSets').value, 1, 20, 3),
+      target: clampInt($('exDefaultTarget').value, 1, 999, 12),
+      weight: Math.max(0, Number($('exDefaultWeight').value) || 0),
+      restSeconds: clampInt($('exDefaultRest').value, 0, 600, 45)
+    },
+    pureVideo: Boolean($('exercisePureVideo')?.checked),
+    tempoPhases: $('exercisePureVideo')?.checked ? [] : collectTempoPhasesFromEditor(),
+    videoUrl,
+    videoBlob: draftExerciseVideoBlob || null,
+    createdAt: old?.createdAt || nowIso(),
+    builtIn: false
+  });
+
+  closeDialog('exerciseDialog');
+  await renderExercises();
+  showToast('动作已保存');
+}
+
+// 动作详情 + 历史记录与趋势图
+async function showExerciseDetail(id, tab = 'info', chartMetric = 'primary') {
+  const exercise = (await getAll('exercises')).find(e => e.id === id);
+  if (!exercise) return;
+  activeDetailExerciseId = id;
+  activeDetailTab = tab;
+  activeChartMetric = chartMetric;
+
+  $('detailTitle').textContent = exercise.name;
+  $('detailTabs').classList.remove('hidden');
+  $('detailTabs').querySelectorAll('.tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.detailTab === activeDetailTab);
+  });
+
+  if (detailVideoObjectUrl) {
+    URL.revokeObjectURL(detailVideoObjectUrl);
+    detailVideoObjectUrl = null;
+  }
+
+  if (activeDetailTab === 'info') {
+    let videoHtml = '';
+    if (exercise.videoBlob) {
+      detailVideoObjectUrl = URL.createObjectURL(exercise.videoBlob);
+      videoHtml = `<div class="detail-line"><b>教学视频</b><br><video class="detail-video" controls playsinline loop src="${detailVideoObjectUrl}"></video></div>`;
+    } else if (exercise.videoUrl) {
+      videoHtml = `<div class="detail-line"><b>教学视频</b><br><video class="detail-video" controls playsinline loop src="${escapeHtml(exercise.videoUrl)}"></video></div>`;
+    }
+    const tempoHtml = (exercise.tempoPhases && exercise.tempoPhases.length)
+      ? `<div class="detail-line"><b>呼吸与节拍节奏（起势准备 ${exercise.prepSeconds ?? 5} 秒）</b><br>${exercise.tempoPhases.map((p, i) => `${i + 1}. ${escapeHtml(p.label)}（${p.seconds}秒${p.countOut ? ' · 逐秒报数' : ''}）`).join('<br>')}</div>`
+      : `<div class="detail-line"><b>起势准备</b>：${exercise.prepSeconds ?? 5} 秒</div>`;
+
+    $('detailContent').innerHTML = `
+      <div class="detail-line"><b>模式：</b>${exercise.pureVideo ? '纯视频跟练（统计参数暂不启用）' : `${typeLabel(exercise.type)} · 常规训练`}</div>
+      <div class="detail-line"><b>分类：</b>${escapeHtml(exercise.muscle)} <b>类型：</b>${typeLabel(exercise.type)}</div>
+      ${videoHtml}
+      <div class="detail-line"><b>动作要领</b><br>${escapeHtml(exercise.notes || '暂无')}</div>
+      <div class="detail-line"><b>专属语音提示</b><br>${escapeHtml(exercise.cue || '暂无')}</div>
+      ${tempoHtml}
+    `;
+  } else {
+    const sessions = (await getAll('sessions')).sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt));
+    const records = [];
+    sessions.forEach(s => {
+      (s.exercises || []).forEach(e => {
+        if (e.exerciseId === id && Array.isArray(e.sets) && e.sets.length) {
+          const totalReps = e.sets.reduce((acc, st) => acc + (Number(st.reps) || 0) + (Number(st.leftReps) || 0) + (Number(st.rightReps) || 0), 0);
+          const totalSecs = e.sets.reduce((acc, st) => acc + (Number(st.durationSeconds) || 0), 0);
+          const maxWeight = Math.max(0, ...e.sets.map(st => Number(st.weightKg) || 0));
+          const volume = e.sets.reduce((acc, st) => {
+            const count = (Number(st.reps) || 0) + (Number(st.leftReps) || 0) + (Number(st.rightReps) || 0) || 1;
+            const w = Number(st.weightKg) || 0;
+            return acc + (w > 0 ? count * w : 0);
+          }, 0);
+          records.push({
+            date: s.startedAt,
+            setsCount: e.sets.length,
+            totalReps,
+            totalSecs,
+            maxWeight,
+            volume,
+            sets: e.sets
+          });
+        }
+      });
+    });
+
+    const hasWeightData = records.some(r => r.maxWeight > 0 || r.volume > 0);
+    const chartPoints = records.map(r => {
+      if (activeChartMetric === 'weight') {
+        return { label: shortDateLabel(r.date), value: hasWeightData ? (r.volume > 0 ? r.volume : r.maxWeight) : (r.totalReps || r.totalSecs) };
+      }
+      return { label: shortDateLabel(r.date), value: r.totalReps > 0 ? r.totalReps : r.totalSecs };
+    });
+
+    const metricTitle = activeChartMetric === 'weight'
+      ? (hasWeightData ? '训练容量/最大重量趋势' : '单次完成量趋势')
+      : (records.some(r => r.totalReps > 0) ? '单次总次数趋势' : '单次累计时长（秒）趋势');
+
+    const svgChart = buildSvgChart(chartPoints);
+    const recentFirst = [...records].reverse();
+
+    $('detailContent').innerHTML = `
+      <div class="chart-card">
+        <div class="chart-header">
+          <span><b>${metricTitle}</b></span>
+          <div class="chart-mode-btns">
+            <button type="button" class="chart-mode-btn ${activeChartMetric === 'primary' ? 'active' : ''}" data-chart-metric="primary">次数/时长</button>
+            <button type="button" class="chart-mode-btn ${activeChartMetric === 'weight' ? 'active' : ''}" data-chart-metric="weight">负重/容量</button>
+          </div>
+        </div>
+        ${svgChart}
+      </div>
+      <div class="detail-line"><b>历史完成明细（共 ${records.length} 次）</b><br>${
+        recentFirst.length
+          ? recentFirst.slice(0, 12).map(r => {
+              const setDesc = r.sets.map(st => {
+                const base = st.leftReps != null ? `左${st.leftReps}/右${st.rightReps}次` : st.reps != null ? `${st.reps}次` : `${st.durationSeconds}秒`;
+                return `${base}${st.weightKg ? `(${st.weightKg}kg)` : ''}`;
+              }).join(' · ');
+              return `<div style="margin-top:6px"><b>${escapeHtml(dateLabel(r.date))}</b> · ${r.setsCount}组<br><span style="color:#64748b">${escapeHtml(setDesc)}</span></div>`;
+            }).join('')
+          : '暂无该动作的训练记录'
+      }</div>
+    `;
+  }
+
+  openDialog('detailDialog');
+}
+
+function buildSvgChart(points) {
+  if (!points.length) {
+    return '<div class="empty-state" style="padding:26px 8px">暂无历史数据，完成训练后自动生成趋势图</div>';
+  }
+  const sliced = points.slice(-10);
+  const w = 360;
+  const h = 140;
+  const padL = 28;
+  const padR = 14;
+  const padT = 16;
+  const padB = 24;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+  const maxVal = Math.max(1, ...sliced.map(p => p.value));
+
+  const coords = sliced.map((p, idx) => {
+    const x = sliced.length === 1 ? padL + plotW / 2 : padL + (idx / (sliced.length - 1)) * plotW;
+    const y = padT + plotH - (p.value / maxVal) * plotH;
+    return { ...p, x, y };
+  });
+
+  const polylinePts = coords.map(c => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' ');
+  const barsHtml = coords.map(c => {
+    const barW = Math.min(22, Math.max(8, plotW / (sliced.length * 1.8)));
+    const barH = Math.max(2, (c.value / maxVal) * plotH);
+    return `<rect x="${(c.x - barW / 2).toFixed(1)}" y="${(padT + plotH - barH).toFixed(1)}" width="${barW.toFixed(1)}" height="${barH.toFixed(1)}" rx="4" fill="#dbeafe"></rect>`;
+  }).join('');
+
+  const dotsHtml = coords.map(c => `
+    <circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="3.5" fill="#2864dc"></circle>
+    <text x="${c.x.toFixed(1)}" y="${(c.y - 6).toFixed(1)}" text-anchor="middle" font-size="9" fill="#1e293b">${c.value}</text>
+    <text x="${c.x.toFixed(1)}" y="${h - 6}" text-anchor="middle" font-size="9" fill="#64748b">${escapeHtml(c.label)}</text>
+  `).join('');
+
+  return `<svg class="chart-svg" viewBox="0 0 ${w} ${h}" role="img" aria-label="训练趋势图">
+    <line x1="${padL}" y1="${padT + plotH}" x2="${w - padR}" y2="${padT + plotH}" stroke="#e2e8f0" stroke-width="1"></line>
+    <text x="4" y="${padT + 4}" font-size="8" fill="#94a3b8">${maxVal}</text>
+    <text x="4" y="${padT + plotH}" font-size="8" fill="#94a3b8">0</text>
+    ${barsHtml}
+    <polyline fill="none" stroke="#2864dc" stroke-width="2" points="${polylinePts}"></polyline>
+    ${dotsHtml}
+  </svg>`;
+}
+
+// 课程管理（含自定义动作加入课程 & 排序）
+async function renderPlans() {
+  const plans = (await getAll('plans')).sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  const exercises = await getAll('exercises');
+  const map = new Map(exercises.map(e => [e.id, e]));
+  $('planList').innerHTML = plans.length
+    ? plans.map(p => `<article class="item-card"><div class="item-top"><div><h3>${escapeHtml(p.name)}</h3><p>${(p.items || []).map(i => escapeHtml(map.get(i.exerciseId)?.name || '已删除动作')).join('、')}</p></div><span class="tag">${(p.items || []).length}个动作</span></div><div class="card-actions"><button class="small-btn blue" data-start-plan="${escapeHtml(p.id)}">开始训练</button><button class="small-btn" data-edit-plan="${escapeHtml(p.id)}">编辑</button><button class="small-btn" data-delete-plan="${escapeHtml(p.id)}">删除</button></div></article>`).join('')
+    : '<div class="list-card empty-state">还没有训练课程。点击右上角新建第一套课程。</div>';
+}
+
+async function openPlanEditor(plan = null) {
+  await populateCategorySelects();
+  $('planDialogTitle').textContent = plan ? '编辑课程' : '新建课程';
+  $('planId').value = plan?.id || '';
+  $('planName').value = plan?.name || '';
+  $('planExerciseSearch').value = '';
+  $('quickCustomPanel').classList.add('hidden');
+  $('quickCustomArrow').textContent = '▾';
+  $('qcName').value = '';
+  $('qcCue').value = '';
+
+  draftPlanItems = (plan?.items || []).map(i => ({
+    exerciseId: i.exerciseId,
+    sets: clampInt(i.sets, 1, 20, 3),
+    target: clampInt(i.target, 1, 999, 12),
+    restSeconds: clampInt(i.restSeconds, 0, 600, 45)
+  }));
+
+  await renderPlanEditorLists();
+  openDialog('planDialog');
+}
+
+async function renderPlanEditorLists() {
+  const exercises = (await getAll('exercises')).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+  const byId = new Map(exercises.map(e => [e.id, e]));
+  const query = $('planExerciseSearch').value.trim().toLowerCase();
+
+  // 1. 已选动作列表（支持上移/下移/移除/改组数与目标）
+  const selContainer = $('selectedPlanItems');
+  if (!draftPlanItems.length) {
+    selContainer.innerHTML = '<div class="empty-state" style="padding:10px">尚未添加动作，请在下方勾选或使用上方“自定义动作加入课程”。</div>';
+  } else {
+    selContainer.innerHTML = draftPlanItems.map((item, idx) => {
+      const ex = byId.get(item.exerciseId);
+      const title = ex ? `${ex.name}（${ex.muscle}）` : '已删除动作';
+      return `
+        <div class="selected-plan-card" data-sel-idx="${idx}">
+          <div class="selected-plan-head">
+            <b>${idx + 1}. ${escapeHtml(title)}</b>
+            <div class="selected-plan-ops">
+              <button type="button" class="mini-op-btn" data-move-up="${idx}" ${idx === 0 ? 'disabled' : ''}>↑</button>
+              <button type="button" class="mini-op-btn" data-move-down="${idx}" ${idx === draftPlanItems.length - 1 ? 'disabled' : ''}>↓</button>
+              <button type="button" class="mini-op-btn" data-remove-sel="${idx}">移除</button>
+            </div>
+          </div>
+          <div class="selected-plan-inputs">
+            <label>组数<input type="number" min="1" max="20" class="sel-sets" value="${item.sets}"></label>
+            <label>次数/秒<input type="number" min="1" max="999" class="sel-target" value="${item.target}"></label>
+            <label>休息(秒)<input type="number" min="0" max="600" class="sel-rest" value="${item.restSeconds}"></label>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // 2. 动作库勾选列表
+  const selectedIds = new Set(draftPlanItems.map(i => i.exerciseId));
+  const filteredEx = exercises.filter(e => !query || `${e.name} ${e.muscle}`.toLowerCase().includes(query));
+  $('planExerciseChoices').innerHTML = filteredEx.map(e => `
+    <label class="choice-row">
+      <input type="checkbox" class="plan-ex-check" value="${escapeHtml(e.id)}" ${selectedIds.has(e.id) ? 'checked' : ''}>
+      <span><b>${escapeHtml(e.name)}</b><small style="display:block;color:#8190a2;margin-top:2px">${escapeHtml(e.muscle)} · ${typeLabel(e.type)}（默认 ${e.defaultTarget?.sets ?? 3}组 × ${e.defaultTarget?.target ?? 12}）</small></span>
+    </label>
+  `).join('') || '<p class="empty-state">没有匹配的动作。</p>';
+}
+
+function syncDraftItemsFromDom() {
+  const cards = Array.from($('selectedPlanItems').querySelectorAll('.selected-plan-card'));
+  cards.forEach((card, idx) => {
+    if (!draftPlanItems[idx]) return;
+    draftPlanItems[idx].sets = clampInt(card.querySelector('.sel-sets')?.value, 1, 20, 3);
+    draftPlanItems[idx].target = clampInt(card.querySelector('.sel-target')?.value, 1, 999, 12);
+    draftPlanItems[idx].restSeconds = clampInt(card.querySelector('.sel-rest')?.value, 0, 600, 45);
+  });
+}
+
+async function handleQuickCustomExerciseForPlan() {
+  const name = $('qcName').value.trim();
+  if (!name) {
+    showToast('请先输入自定义动作名称');
+    return;
+  }
+  syncDraftItemsFromDom();
+  const muscle = await addCustomCategory($('qcMuscle').value);
+  const type = $('qcType').value;
+  const sets = clampInt($('qcSets').value, 1, 20, 3);
+  const target = clampInt($('qcTarget').value, 1, 999, 12);
+  const restSeconds = clampInt($('qcRest').value, 0, 600, 45);
+  const cue = $('qcCue').value.trim();
+
+  const newEx = {
+    id: makeId(),
+    name,
+    muscle,
+    type,
+    notes: '',
+    cue,
+    prepSeconds: 5,
+    defaultTarget: { sets, target, weight: 0, restSeconds },
+    tempoPhases: [],
+    videoUrl: '',
+    videoBlob: null,
+    createdAt: nowIso(),
+    builtIn: false
+  };
+  await put('exercises', newEx);
+  draftPlanItems.push({ exerciseId: newEx.id, sets, target, restSeconds });
+  $('qcName').value = '';
+  $('qcCue').value = '';
+  await renderPlanEditorLists();
+  showToast(`已创建“${name}”并加入课程`);
+}
+
+async function savePlan(event) {
+  event.preventDefault();
+  syncDraftItemsFromDom();
+  const exercises = await getAll('exercises');
+  const byId = new Map(exercises.map(e => [e.id, e]));
+  const oldId = $('planId').value;
+  const old = (await getAll('plans')).find(p => p.id === oldId);
+  const validItems = draftPlanItems.filter(i => byId.has(i.exerciseId));
+  if (!validItems.length) {
+    showToast('请至少选择或自定义一个动作');
+    return;
+  }
+  await put('plans', {
+    id: oldId || makeId(),
+    name: $('planName').value.trim(),
+    items: validItems,
+    createdAt: old?.createdAt || nowIso(),
+    updatedAt: nowIso()
+  });
+  closeDialog('planDialog');
+  await renderPlans();
+  showToast('课程已保存');
+}
+
+// 训练执行器（5秒起势准备 + 多阶段呼吸节拍引导 + 语音播报）
+async function startPlan(id) {
+  const plan = (await getAll('plans')).find(p => p.id === id);
+  if (!plan) return;
+  const all = await getAll('exercises');
+  const map = new Map(all.map(e => [e.id, e]));
+  const items = plan.items.map(i => ({ ...i, exercise: map.get(i.exerciseId) })).filter(i => i.exercise);
+  if (!items.length) {
+    showToast('课程没有可用动作');
     return;
   }
 
-  const act = actions[index];
-  playerState.stepIndex = index;
-  playerState.isResting = false;
-  playerState.currentRep = 0;
-  playerState.remainingSec = 0;
+  const firstEx = items[0].exercise;
+  const firstPure = Boolean(firstEx.pureVideo);
+  const prepSec = clampInt(firstEx.prepSeconds, 0, 30, 5);
+  runner = {
+    planId: plan.id,
+    planName: plan.name,
+    items,
+    index: 0,
+    setIndex: 1,
+    session: {
+      id: makeId(),
+      planId: plan.id,
+      planName: plan.name,
+      startedAt: nowIso(),
+      endedAt: null,
+      durationSeconds: 0,
+      exercises: []
+    },
+    phase: firstPure ? 'video' : (prepSec > 0 ? 'prepare' : 'work'),
+    remaining: firstPure ? 0 : (prepSec > 0 ? prepSec : 0),
+    // 节拍状态
+    tempoIndex: 0,
+    tempoSecLeft: 0,
+    completedRepsInSet: 0,
+    pendingAdvance: null
+  };
 
-  const stepTag = document.getElementById("playerStepTag");
-  if (stepTag) stepTag.textContent = `动作 ${index + 1}/${actions.length}`;
+  await requestWakeLock();
+  $('runnerPlanName').textContent = plan.name;
+  setupRunnerPhase(true);
+  openDialog('runnerDialog');
+}
 
-  const videoEl = document.getElementById("actionVideo");
-  const videoWrapper = document.getElementById("videoWrapper");
+function currentRunnerItem() {
+  return runner?.items[runner.index];
+}
 
-  if (act.videoUrl && videoEl && videoWrapper) {
-    videoWrapper.classList.remove("hidden");
-    videoEl.muted = false;
-    videoEl.src = act.videoUrl;
-    videoEl.onerror = () => {
-      if (playerState.active && playerState.stepIndex === index) {
-        showToast("视频加载失败，已跳过该动作");
-        setTimeout(() => runActionStep(index + 1), 500);
-      }
-    };
-    videoEl.play().catch(() => {});
-  }
+function setupRunnerPhase(isFirstStart = false) {
+  stopRunnerTimer();
+  if (!runner) return;
+  const item = currentRunnerItem();
+  const exercise = item.exercise;
+  const hasTempo = Array.isArray(exercise.tempoPhases) && exercise.tempoPhases.length > 0;
 
   // 纯视频跟练：不计时、不计数、不休息，视频播完自动下一项
-  if (act.pureVideo) {
-    if (!act.videoUrl) {
-      setPlayerTexts({
-        title: act.name,
-        desc: "未找到本地视频，已自动跳过该动作",
-        mode: "纯视频跟练",
-        value: "跳过",
-        unit: "请在动作元件中重新选择视频"
-      });
-      showToast("纯视频动作未找到视频，已跳过");
-      playerState.timerHandle = setTimeout(() => runActionStep(index + 1), 800);
-      return;
-    }
-
-    setPlayerTexts({
-      title: act.name,
-      desc: "纯视频跟练模式（计时/计数/休息参数已忽略）",
-      mode: "跟随视频练习中",
-      value: "跟练",
-      unit: "视频播放完毕自动进入下一项"
-    });
-    speakText(`开始纯视频跟练：${act.name}`, true);
-
+  if (exercise.pureVideo) {
+    runner.phase = 'video';
+    runner.tempoIndex = 0;
+    runner.completedRepsInSet = 0;
+    renderRunner();
+    const videoEl = $('runnerVideo');
     if (videoEl) {
       videoEl.onended = () => {
-        if (
-          playerState.active &&
-          !playerState.paused &&
-          playerState.stepIndex === index
-        ) {
-          runActionStep(index + 1);
+        if (runner && runner.phase === 'video') advanceRunner();
+      };
+      videoEl.play().catch(() => showToast('若视频未自动播放，请点视频上的播放按钮'));
+    } else {
+      showToast('该纯视频动作没有视频，已自动跳过');
+      setTimeout(() => {
+        if (runner && runner.phase === 'video') advanceRunner();
+      }, 900);
+    }
+    speak(`纯视频跟练：${exercise.name}`, true);
+    return;
+  }
+
+  if (runner.phase === 'prepare') {
+    const prepSec = clampInt(exercise.prepSeconds, 0, 30, 5);
+    runner.remaining = prepSec;
+    runner.completedRepsInSet = 0;
+    const prefix = isFirstStart
+      ? `开始训练，${runner.planName}。第一个动作，${exercise.name}。`
+      : `准备动作，${exercise.name}，第${runner.setIndex}组。`;
+    const cuePart = exercise.cue ? `${exercise.cue}。` : '';
+    speak(`${prefix}${cuePart}请调整初始姿势，准备开始。`, true);
+    renderRunner();
+    startCountdownLoop('prepare');
+  } else if (runner.phase === 'work') {
+    runner.tempoIndex = 0;
+    runner.completedRepsInSet = 0;
+    renderRunner();
+    if (hasTempo) {
+      startTempoPhase(0, true);
+    } else {
+      speak(`开始第${runner.setIndex}组，${exercise.name}。`, true);
+    }
+  } else if (runner.phase === 'rest') {
+    runner.remaining = clampInt(item.restSeconds, 0, 600, 30);
+    playRestStartCue();
+    speak(`本组完成，休息${runner.remaining}秒。`, true);
+    renderRunner();
+    startCountdownLoop('rest');
+  } else if (runner.phase === 'done') {
+    renderRunner();
+    speak('训练课程已经全部完成，太棒了！', true);
+  }
+}
+
+function startTempoPhase(phaseIdx, announceStart = false) {
+  stopRunnerTimer();
+  if (!runner || runner.phase !== 'work') return;
+  const exercise = currentRunnerItem().exercise;
+  const phases = exercise.tempoPhases || [];
+  if (!phases.length) return;
+
+  runner.tempoIndex = phaseIdx % phases.length;
+  const p = phases[runner.tempoIndex];
+  runner.tempoSecLeft = clampInt(p.seconds, 1, 120, 3);
+  renderRunner();
+
+  if (announceStart || p.voice || p.label) {
+    speak(p.voice || p.label, true);
+  }
+  if (p.countOut) {
+    setTimeout(() => {
+      if (runner && runner.phase === 'work' && runner.tempoIndex === phaseIdx) speakCount('1');
+    }, 350);
+  }
+
+  let tick = 1;
+  timerHandle = setInterval(() => {
+    if (!runner || runner.phase !== 'work') {
+      stopRunnerTimer();
+      return;
+    }
+    runner.tempoSecLeft -= 1;
+    const numEl = $('runnerNumber');
+    if (numEl) numEl.textContent = Math.max(0, runner.tempoSecLeft);
+
+    if (runner.tempoSecLeft > 0) {
+      tick += 1;
+      if (p.countOut) speakCount(String(tick));
+    } else {
+      // 当前节拍阶段结束
+      const nextIdx = runner.tempoIndex + 1;
+      if (nextIdx < phases.length) {
+        startTempoPhase(nextIdx, true);
+      } else {
+        // 完成一轮完整节拍循环 -> 计数 +1
+        runner.completedRepsInSet += 1;
+        const targetReps = currentRunnerItem().target;
+        const inputEl = $('actualValue');
+        if (inputEl && exercise.type !== 'side') {
+          inputEl.value = runner.completedRepsInSet;
         }
+        if (targetReps && runner.completedRepsInSet >= targetReps) {
+          stopRunnerTimer();
+          speak(`已达到目标${targetReps}次，本组完成！`, true);
+          const subEl = $('tempoStatusSub');
+          if (subEl) subEl.textContent = `已完成目标 ${runner.completedRepsInSet} 次，点击下方“完成本组”记录`;
+        } else {
+          startTempoPhase(0, true);
+        }
+      }
+    }
+  }, 1000);
+}
+
+function startCountdownLoop(mode) {
+  stopRunnerTimer();
+  if (!runner || runner.phase !== mode) return;
+  timerHandle = setInterval(() => {
+    if (!runner || runner.phase !== mode) {
+      stopRunnerTimer();
+      return;
+    }
+    runner.remaining = Math.max(0, runner.remaining - 1);
+    const numEl = $('runnerNumber');
+    if (numEl) numEl.textContent = runner.remaining;
+
+    if ((mode === 'prepare' || mode === 'rest') && runner.remaining > 0 && runner.remaining <= 3) {
+      if (mode === 'rest') playRestTickCue();
+      else playBeep(760, 120, 1);
+      speakCount(String(runner.remaining));
+    }
+
+    if (runner.remaining <= 0) {
+      stopRunnerTimer();
+      if (mode === 'prepare') {
+        runner.phase = 'work';
+        setupRunnerPhase(false);
+      } else if (mode === 'rest') {
+        playRestEndCue();
+        applyPendingAdvance();
+      }
+    }
+  }, 1000);
+}
+
+function renderRunner() {
+  if (!runner) return;
+  const item = currentRunnerItem();
+  const exercise = item.exercise;
+  const totalSets = runner.items.reduce((sum, i) => sum + i.sets, 0);
+  const completedSets = runner.items.slice(0, runner.index).reduce((sum, i) => sum + i.sets, 0) + runner.setIndex - 1;
+  $('runnerProgressBar').style.width = `${Math.min(100, (completedSets / Math.max(1, totalSets)) * 100)}%`;
+
+  if (runnerVideoObjectUrl) {
+    URL.revokeObjectURL(runnerVideoObjectUrl);
+    runnerVideoObjectUrl = null;
+  }
+  let videoSrc = '';
+  if (exercise.videoBlob) {
+    runnerVideoObjectUrl = URL.createObjectURL(exercise.videoBlob);
+    videoSrc = runnerVideoObjectUrl;
+  } else if (exercise.videoUrl) {
+    videoSrc = exercise.videoUrl;
+  }
+  const isPureVideo = Boolean(exercise.pureVideo);
+  const videoHtml = videoSrc
+    ? isPureVideo
+      ? `<video id="runnerVideo" class="runner-video" src="${escapeHtml(videoSrc)}" autoplay playsinline controls></video>`
+      : `<video id="runnerVideo" class="runner-video" src="${escapeHtml(videoSrc)}" autoplay loop muted playsinline controls></video>`
+    : '';
+
+  const hasTempo = Array.isArray(exercise.tempoPhases) && exercise.tempoPhases.length > 0;
+  const currentPhase = hasTempo ? exercise.tempoPhases[runner.tempoIndex] : null;
+
+  let bannerHtml = '';
+  if (runner.phase === 'prepare') {
+    bannerHtml = `<div class="tempo-banner prep-mode"><div class="tempo-phase-title">调整初始姿势（准备缓冲）</div><div class="tempo-phase-sub">先摆好姿势，倒计时结束后开始做动作</div></div>`;
+  } else if (runner.phase === 'work' && currentPhase) {
+    bannerHtml = `<div class="tempo-banner"><div class="tempo-phase-title">${escapeHtml(currentPhase.label)}</div><div class="tempo-phase-sub" id="tempoStatusSub">本组节拍已完成：${runner.completedRepsInSet} / 目标 ${item.target}</div></div>`;
+  } else if (runner.phase === 'rest') {
+    const nextName = runner.pendingAdvance
+      ? (runner.items[runner.pendingAdvance.index]?.exercise.name || '下一动作')
+      : '下一组';
+    bannerHtml = `<div class="tempo-banner rest-mode"><div class="tempo-phase-title">组间休息 · 下一项：${escapeHtml(nextName)}</div><div class="tempo-phase-sub">放松呼吸，倒计时结束自动继续</div></div>`;
+  } else if (runner.phase === 'video') {
+    bannerHtml = `<div class="tempo-banner"><div class="tempo-phase-title">纯视频跟练</div><div class="tempo-phase-sub">跟随视频完成动作，结束后自动进入下一项</div></div>`;
+  }
+
+  const numberDisplay = runner.phase === 'done'
+    ? '✓'
+    : runner.phase === 'video'
+      ? '▶'
+      : (runner.phase === 'prepare' || runner.phase === 'rest')
+      ? runner.remaining
+      : hasTempo
+        ? runner.tempoSecLeft
+        : '开始';
+
+  const defaultVal = (hasTempo && runner.completedRepsInSet > 0) ? runner.completedRepsInSet : item.target;
+
+  $('runnerBody').innerHTML = `
+    <div class="runner-kicker">动作 ${runner.index + 1} / ${runner.items.length} · ${isPureVideo ? '纯视频跟练（暂不统计）' : `第 ${runner.setIndex} / ${item.sets} 组（目标 ${item.target}${exercise.type === 'time' ? '秒' : '次'}）`}</div>
+    <h2>${escapeHtml(exercise.name)}</h2>
+    ${exercise.cue ? `<p class="runner-cue">💡 ${escapeHtml(exercise.cue)}</p>` : ''}
+    ${videoHtml}
+    ${bannerHtml}
+    <div class="runner-label">${
+      runner.phase === 'prepare' ? '起势准备倒计时'
+        : runner.phase === 'rest' ? '休息剩余秒数'
+          : runner.phase === 'video' ? '跟随视频完成本次练习'
+            : runner.phase === 'done' ? '本次训练已全部完成'
+              : hasTempo ? '当前节拍倒计时' : '完成本组后记录实际数据'
+    }</div>
+    <div class="runner-number" id="runnerNumber">${numberDisplay}</div>
+    ${runner.phase === 'prepare'
+      ? `<div class="runner-controls"><button class="alt" id="skipPrepareBtn">立即开始</button></div>`
+      : runner.phase === 'work'
+        ? `<div class="runner-inputs">${
+            exercise.type === 'side'
+              ? `<label>左侧次数<input id="actualLeft" type="number" min="0" max="9999" value="${defaultVal}" inputmode="numeric"></label><label>右侧次数<input id="actualRight" type="number" min="0" max="9999" value="${defaultVal}" inputmode="numeric"></label>`
+              : `<label>${exercise.type === 'time' ? '完成时长（秒）' : '完成次数'}<input id="actualValue" type="number" min="0" max="9999" value="${defaultVal}" inputmode="numeric"></label><label>重量（kg）<input id="actualWeight" type="number" min="0" max="9999" step="0.5" value="${exercise.defaultTarget?.weight ?? 0}" inputmode="decimal"></label>`
+          }</div>
+          <div class="runner-controls">
+            <button class="alt" id="runnerCueBtn">重播提示</button>
+            ${hasTempo ? `<button class="alt" id="restartTempoBtn">重计节拍</button>` : ''}
+            <button class="main" id="completeSetBtn">完成本组</button>
+          </div>`
+        : runner.phase === 'video'
+          ? `<div class="runner-controls"><button class="alt" id="replayVideoBtn">重播视频</button><button class="main" id="nextVideoBtn">下一个动作</button></div>`
+          : runner.phase === 'rest'
+            ? `<div class="runner-controls"><button class="alt" id="skipRestBtn">跳过休息</button><button class="main" id="pauseRestBtn">暂停计时</button></div>`
+            : `<div class="runner-controls"><button class="main" id="finishSessionBtn">保存并结束</button></div>`
+    }
+  `;
+
+  if (runner.phase === 'prepare') {
+    $('skipPrepareBtn').onclick = () => {
+      runner.phase = 'work';
+      setupRunnerPhase(false);
+    };
+  } else if (runner.phase === 'work') {
+    $('runnerCueBtn').onclick = () => speak(exercise.cue || exercise.notes || exercise.name);
+    if ($('restartTempoBtn')) {
+      $('restartTempoBtn').onclick = () => {
+        runner.completedRepsInSet = 0;
+        startTempoPhase(0, true);
       };
     }
-    return;
-  }
-
-  // 常规参数模式
-  const duration = Math.max(1, Number(act.duration) || 30);
-  const reps = Math.max(0, Number(act.reps) || 0);
-  const rest = Math.max(0, Number(act.rest) || 0);
-  const repInterval = reps > 0 ? Math.max(2, Math.floor(duration / reps)) : 0;
-
-  playerState.remainingSec = duration;
-
-  setPlayerTexts({
-    title: act.name,
-    desc: reps > 0 ? `目标计数：${reps} 次` : "保持深呼吸，平稳完成动作",
-    mode: "动作进行中",
-    value: duration,
-    unit: reps > 0 ? `秒（计数 0/${reps}）` : "秒"
-  });
-
-  speakText(`开始第${index + 1}个动作，${act.name}`, true);
-
-  playerState.timerHandle = setInterval(() => {
-    if (!playerState.active || playerState.paused) return;
-
-    playerState.remainingSec -= 1;
-    const elapsed = duration - playerState.remainingSec;
-
-    if (
-      repInterval > 0 &&
-      elapsed > 0 &&
-      elapsed % repInterval === 0 &&
-      playerState.currentRep < reps
-    ) {
-      playerState.currentRep += 1;
-      playCountCue();
-      speakText(`第${playerState.currentRep}次`, true);
-    }
-
-    const valueEl = document.getElementById("timerValue");
-    const unitEl = document.getElementById("timerUnit");
-    if (valueEl) valueEl.textContent = String(Math.max(0, playerState.remainingSec));
-    if (unitEl) {
-      unitEl.textContent = reps > 0 ? `秒（计数 ${playerState.currentRep}/${reps}）` : "秒";
-    }
-
-    if (playerState.remainingSec > 0 && playerState.remainingSec <= 3) {
-      playBeep(760, 120, 1);
-    }
-
-    if (playerState.remainingSec <= 0) {
-      clearPlayerTimer();
-      stopAndCleanupVideo();
-
-      if (rest > 0 && index < actions.length - 1) {
-        startRestCountdown(rest, index + 1);
+    $('completeSetBtn').onclick = completeSet;
+  } else if (runner.phase === 'video') {
+    $('nextVideoBtn').onclick = () => advanceRunner();
+    $('replayVideoBtn').onclick = () => {
+      const video = $('runnerVideo');
+      if (video) {
+        video.currentTime = 0;
+        video.play().catch(() => {});
+      }
+    };
+  } else if (runner.phase === 'rest') {
+    $('skipRestBtn').onclick = () => applyPendingAdvance();
+    $('pauseRestBtn').onclick = () => {
+      if (timerHandle) {
+        stopRunnerTimer();
+        $('pauseRestBtn').textContent = '继续计时';
       } else {
-        runActionStep(index + 1);
+        $('pauseRestBtn').textContent = '暂停计时';
+        startCountdownLoop('rest');
       }
-    }
-  }, 1000);
+    };
+  } else if (runner.phase === 'done') {
+    $('finishSessionBtn').onclick = finishSession;
+  }
 }
 
-function startRestCountdown(restSeconds, nextActionIndex) {
-  clearPlayerTimer();
-  stopAndCleanupVideo();
-  cancelSpeech();
+function completeSet() {
+  stopRunnerTimer();
+  const item = currentRunnerItem();
+  const exercise = item.exercise;
+  const isSide = exercise.type === 'side';
+  const actual = isSide ? null : clampInt($('actualValue').value, 0, 9999, 0);
+  const left = isSide ? clampInt($('actualLeft').value, 0, 9999, 0) : null;
+  const right = isSide ? clampInt($('actualRight').value, 0, 9999, 0) : null;
+  const weight = isSide ? 0 : Math.max(0, Number($('actualWeight').value) || 0);
 
-  const seconds = Math.max(1, Number(restSeconds) || 10);
-  const nextAct = actions[nextActionIndex] || { name: "下一动作" };
-
-  playerState.isResting = true;
-  playerState.remainingSec = seconds;
-
-  setPlayerTexts({
-    title: `休息调整 · 下一项：${nextAct.name}`,
-    desc: "请放松呼吸，倒计时结束后自动开始",
-    mode: "组间休息倒计时",
-    value: seconds,
-    unit: "秒后自动开始下一个动作"
-  });
-
-  playRestStartCue();
-  speakText(`组间休息 ${seconds} 秒`, true);
-
-  playerState.timerHandle = setInterval(() => {
-    if (!playerState.active || playerState.paused) return;
-
-    playerState.remainingSec -= 1;
-    const valueEl = document.getElementById("timerValue");
-    if (valueEl) valueEl.textContent = String(Math.max(0, playerState.remainingSec));
-
-    if (playerState.remainingSec > 0 && playerState.remainingSec <= 3) {
-      playRestTickCue();
+  if (isSide ? (left <= 0 && right <= 0) : (actual <= 0)) {
+    showToast('请输入本组实际完成数据');
+    if (Array.isArray(exercise.tempoPhases) && exercise.tempoPhases.length) {
+      startTempoPhase(runner.tempoIndex || 0, false);
     }
-
-    if (playerState.remainingSec <= 0) {
-      clearPlayerTimer();
-      playRestEndCue();
-      runActionStep(nextActionIndex);
-    }
-  }, 1000);
-}
-
-function advanceNextStep() {
-  if (!playerState.active) return;
-
-  if (playerState.isResting) {
-    runActionStep(playerState.stepIndex + 1);
     return;
   }
 
-  const act = actions[playerState.stepIndex];
-  if (act && !act.pureVideo && act.rest > 0 && playerState.stepIndex < actions.length - 1) {
-    startRestCountdown(act.rest, playerState.stepIndex + 1);
-  } else {
-    runActionStep(playerState.stepIndex + 1);
+  let exerciseRecord = runner.session.exercises.find(e => e.exerciseId === exercise.id);
+  if (!exerciseRecord) {
+    exerciseRecord = { exerciseId: exercise.id, name: exercise.name, type: exercise.type, sets: [] };
+    runner.session.exercises.push(exerciseRecord);
   }
-}
-
-// ==========================================
-// 需求6：缓存分级清理（首页也有入口）
-// ==========================================
-function appendTempLog(msg) {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY_LOGS) || "[]";
-    const arr = JSON.parse(raw);
-    arr.push(`[${new Date().toISOString()}] ${msg}`);
-    localStorage.setItem(STORAGE_KEY_LOGS, JSON.stringify(arr.slice(-50)));
-  } catch (e) {}
-}
-
-function initCacheManager() {
-  const homeCacheBtn = document.getElementById("btnHomeCache");
-  if (homeCacheBtn) {
-    homeCacheBtn.addEventListener("click", () => switchView("view-settings"));
-  }
-
-  const scanBtn = document.getElementById("btnScanCache");
-  if (scanBtn) {
-    scanBtn.addEventListener("click", () => {
-      scanCacheSizes();
-      showToast("缓存扫描已完成");
-    });
-  }
-
-  const cleanBtn = document.getElementById("btnCleanCache");
-  if (!cleanBtn) return;
-
-  cleanBtn.addEventListener("click", async () => {
-    const cleanUseful = document.getElementById("chkCacheUseful").checked;
-    const cleanUseless = document.getElementById("chkCacheUseless").checked;
-
-    if (!cleanUseful && !cleanUseless) {
-      showToast("请至少勾选一项要清理的缓存类别");
-      return;
-    }
-
-    const items = [];
-    if (cleanUseful) items.push("· 动作编排与本地视频（恢复默认动作）");
-    if (cleanUseless) items.push("· 临时日志与过期缓存");
-
-    if (!window.confirm(`确认清理以下内容？此操作不可撤销：\n\n${items.join("\n")}`)) {
-      return;
-    }
-
-    if (cleanUseless) {
-      localStorage.removeItem(STORAGE_KEY_LOGS);
-      if ("caches" in window) {
-        try {
-          const keys = await caches.keys();
-          for (const key of keys) {
-            if (!key.startsWith(USEFUL_CACHE_PREFIX)) {
-              await caches.delete(key);
-            }
-          }
-        } catch (e) {}
-      }
-    }
-
-    if (cleanUseful) {
-      if (playerState.active) exitWorkout();
-      actions.forEach((item) => {
-        if (item.videoUrl && item.videoUrl.startsWith("blob:")) {
-          URL.revokeObjectURL(item.videoUrl);
-        }
-      });
-      await clearAllVideoBlobs();
-      localStorage.removeItem(STORAGE_KEY_ACTIONS);
-      actions = DEFAULT_ACTIONS.map((item) => ({ ...item }));
-      saveActions();
-      renderRoutineList();
-
-      if ("caches" in window) {
-        try {
-          const keys = await caches.keys();
-          for (const key of keys) {
-            if (key.startsWith(USEFUL_CACHE_PREFIX)) {
-              await caches.delete(key);
-            }
-          }
-        } catch (e) {}
-      }
-    }
-
-    await scanCacheSizes();
-    showToast("所选缓存已清理完毕");
+  exerciseRecord.sets.push({
+    setNumber: runner.setIndex,
+    reps: exercise.type === 'time' || isSide ? null : actual,
+    leftReps: left,
+    rightReps: right,
+    durationSeconds: exercise.type === 'time' ? actual : null,
+    weightKg: weight,
+    completedAt: nowIso()
   });
+
+  if (runner.setIndex < item.sets && item.restSeconds > 0) {
+    beginRest({ index: runner.index, setIndex: runner.setIndex + 1 });
+  } else {
+    advanceRunner();
+  }
 }
 
-async function scanCacheSizes() {
-  let usefulBytes = new Blob([localStorage.getItem(STORAGE_KEY_ACTIONS) || ""]).size;
-  let uselessBytes = new Blob([localStorage.getItem(STORAGE_KEY_LOGS) || ""]).size;
+function getNextStep() {
+  const item = currentRunnerItem();
+  if (!item.exercise.pureVideo && runner.setIndex < item.sets) {
+    return { index: runner.index, setIndex: runner.setIndex + 1 };
+  }
+  if (runner.index < runner.items.length - 1) {
+    return { index: runner.index + 1, setIndex: 1 };
+  }
+  return null;
+}
 
-  usefulBytes += actions.reduce((sum, item) => sum + (Number(item.videoSize) || 0), 0);
+function beginRest(target) {
+  stopRunnerTimer();
+  runner.pendingAdvance = target;
+  runner.phase = 'rest';
+  setupRunnerPhase(false);
+}
 
-  if ("caches" in window) {
-    try {
-      const keys = await caches.keys();
-      for (const key of keys) {
-        const cache = await caches.open(key);
-        const requests = await cache.keys();
-        const estimated = requests.length * 18 * 1024;
-        if (key.startsWith(USEFUL_CACHE_PREFIX)) {
-          usefulBytes += estimated;
-        } else {
-          uselessBytes += estimated;
-        }
-      }
-    } catch (e) {}
+function applyPendingAdvance() {
+  const target = runner.pendingAdvance;
+  runner.pendingAdvance = null;
+  if (target) {
+    runner.index = target.index;
+    runner.setIndex = target.setIndex;
+    runner.phase = runner.items[target.index].exercise.pureVideo ? 'video' : 'prepare';
+    setupRunnerPhase(false);
+  } else {
+    advanceRunner();
+  }
+}
+
+function advanceRunner() {
+  stopRunnerTimer();
+  const next = getNextStep();
+  if (!next) {
+    runner.phase = 'done';
+    setupRunnerPhase(false);
+    return;
   }
 
-  const usefulEl = document.getElementById("sizeUseful");
-  const uselessEl = document.getElementById("sizeUseless");
-  if (usefulEl) usefulEl.textContent = formatBytes(usefulBytes);
-  if (uselessEl) uselessEl.textContent = formatBytes(uselessBytes);
+  const currentItem = currentRunnerItem();
+  const nextExercise = runner.items[next.index].exercise;
+  const isNewAction = next.index !== runner.index;
+
+  // 动作之间也加组间休息（纯视频动作暂不启用统计参数，跳过休息）
+  if (
+    isNewAction &&
+    !currentItem.exercise.pureVideo &&
+    !nextExercise.pureVideo &&
+    currentItem.restSeconds > 0
+  ) {
+    beginRest(next);
+    return;
+  }
+
+  runner.index = next.index;
+  runner.setIndex = next.setIndex;
+  runner.phase = nextExercise.pureVideo ? 'video' : 'prepare';
+  setupRunnerPhase(false);
 }
+
+function stopRunnerTimer() {
+  if (timerHandle) {
+    clearInterval(timerHandle);
+    timerHandle = null;
+  }
+}
+
+async function finishSession() {
+  if (!runner) return;
+  stopRunnerTimer();
+  stopAllVideos();
+  cancelSpeech();
+  await releaseWakeLock();
+  const ended = Date.now();
+  runner.session.endedAt = new Date(ended).toISOString();
+  runner.session.durationSeconds = Math.max(0, Math.round((ended - new Date(runner.session.startedAt).getTime()) / 1000));
+  await put('sessions', runner.session);
+  runner = null;
+  closeDialog('runnerDialog');
+  showToast('训练记录已保存');
+  await renderHome();
+  if (currentPage === 'history') await renderHistory();
+}
+
+function closeRunner() {
+  if (!runner) {
+    stopAllVideos();
+    cancelSpeech();
+    closeDialog('runnerDialog');
+    return;
+  }
+  if (confirm('训练尚未结束。确定退出吗？当前训练数据将不会保存。')) {
+    stopRunnerTimer();
+    stopAllVideos();
+    cancelSpeech();
+    releaseWakeLock();
+    runner = null;
+    closeDialog('runnerDialog');
+  }
+}
+
+// 历史与备份
+async function renderHistory() {
+  const sessions = (await getAll('sessions')).sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
+  $('historyTotal').textContent = sessions.length;
+  $('historyMinutes').textContent = Math.round(sessions.reduce((sum, s) => sum + (s.durationSeconds || 0), 0) / 60);
+  $('historyList').innerHTML = sessions.length ? sessions.map(sessionCardHtml).join('') : '<div class="list-card empty-state">还没有训练记录。</div>';
+}
+
+async function showSessionDetail(id) {
+  const s = (await getAll('sessions')).find(x => x.id === id);
+  if (!s) return;
+  activeDetailExerciseId = null;
+  $('detailTabs').classList.add('hidden');
+  $('detailTitle').textContent = s.planName || '训练详情';
+  const lines = (s.exercises || []).map(e => `<div class="detail-line"><b>${escapeHtml(e.name)}</b><br>${(e.sets || []).map(set => `第${set.setNumber}组：${set.leftReps != null ? `左${set.leftReps}次 / 右${set.rightReps}次` : set.reps != null ? `${set.reps}次` : `${set.durationSeconds}秒`}${set.weightKg ? ` · ${set.weightKg}kg` : ''}`).join('<br>')}</div>`).join('');
+  $('detailContent').innerHTML = `<div class="detail-line">${escapeHtml(dateLabel(s.startedAt))}<br>训练时长：${Math.round((s.durationSeconds || 0) / 60)}分钟</div>${lines || '<p>没有详细动作数据</p>'}`;
+  openDialog('detailDialog');
+}
+
+function downloadFile(filename, content, mime) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+async function exportJson() {
+  const exercises = (await getAll('exercises')).map(e => {
+    const copy = { ...e };
+    delete copy.videoBlob; // 跳过本地大视频 Blob，保证备份体积小且稳定
+    return copy;
+  });
+  const backup = {
+    app: 'FitLog',
+    version: 2,
+    exportedAt: nowIso(),
+    categories: await getCategories(),
+    exercises,
+    plans: await getAll('plans'),
+    sessions: await getAll('sessions')
+  };
+  downloadFile(`fitlog-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(backup, null, 2), 'application/json');
+  showToast('JSON备份已导出');
+}
+
+async function exportCsv() {
+  const sessions = await getAll('sessions');
+  const rows = [['训练日期', '课程', '动作', '组数', '组序号', '次数', '左侧次数', '右侧次数', '时长秒', '重量kg']];
+  sessions.forEach(s => (s.exercises || []).forEach(e => (e.sets || []).forEach(set => rows.push([s.startedAt, s.planName || '', e.name, (e.sets || []).length, set.setNumber, set.reps ?? '', set.leftReps ?? '', set.rightReps ?? '', set.durationSeconds ?? '', set.weightKg ?? 0]))));
+  const csv = '\uFEFF' + rows.map(row => row.map(value => `"${String(value ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  downloadFile(`fitlog-training-${new Date().toISOString().slice(0, 10)}.csv`, csv, 'text/csv;charset=utf-8');
+  showToast('CSV明细已导出');
+}
+
+async function importJson(file) {
+  if (!file) return;
+  try {
+    const parsed = JSON.parse(await file.text());
+    if (!parsed || parsed.app !== 'FitLog' || !Array.isArray(parsed.exercises) || !Array.isArray(parsed.plans) || !Array.isArray(parsed.sessions)) {
+      throw new Error('文件格式不正确，无法识别为FitLog备份');
+    }
+    if (!confirm(`将恢复 ${parsed.exercises.length} 个动作、${parsed.plans.length} 个课程、${parsed.sessions.length} 条训练记录。恢复会覆盖当前全部数据，确定继续吗？`)) return;
+    for (const name of STORES) await clearStore(name);
+    if (Array.isArray(parsed.categories)) {
+      await put('meta', { key: 'categories', value: parsed.categories });
+    }
+    for (const item of parsed.exercises) if (item && item.id) await put('exercises', item);
+    for (const item of parsed.plans) if (item && item.id) await put('plans', item);
+    for (const item of parsed.sessions) if (item && item.id) await put('sessions', item);
+    showToast('备份恢复成功');
+    await refreshCurrentPage();
+  } catch (error) {
+    alert(`恢复失败：${error.message}`);
+  } finally {
+    $('importJsonInput').value = '';
+  }
+}
+
+async function updateStorageStatus() {
+  try {
+    const estimate = await navigator.storage?.estimate?.();
+    $('storageStatus').textContent = estimate ? `浏览器存储估算：已使用 ${(estimate.usage / 1024 / 1024).toFixed(2)} MB。` : '本地数据库已就绪。';
+  } catch {
+    $('storageStatus').textContent = '本地数据库已就绪。';
+  }
+}
+
+/* ===================== 缓存分级清理 ===================== */
+const USEFUL_CACHE_NAME = `fitlog-v${APP_VERSION}-cache`;
 
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -1166,81 +1552,395 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-// ==========================================
-// 需求7：一键复制数据并跳转 DeepSeek
-// ==========================================
-function initDeepseekExport() {
-  const handleExport = async () => {
-    const summaryLines = [
-      `【TaiChiFlow v${APP_VERSION} 训练编排数据】`,
-      `导出时间：${new Date().toLocaleString("zh-CN")}`,
-      `动作总数：${actions.length} 项`,
-      `------------------------`,
-      ...actions.map((item, index) => {
-        if (item.pureVideo) {
-          return `${index + 1}. ${item.name} | 模式：纯视频跟练${item.videoName ? ` | 视频：${item.videoName}` : ""}`;
-        }
-        return `${index + 1}. ${item.name} | 时长：${item.duration}秒 | 计数：${item.reps}次 | 组间休息：${item.rest}秒`;
-      }),
-      `------------------------`,
-      `请作为中医养生与太极气功教练，分析以上训练编排的强度、经络覆盖合理性，并给出改进建议：`
-    ];
-
-    const exportText = summaryLines.join("\n");
-    const copied = await copyText(exportText);
-
-    showToast(copied ? "数据已复制，正在打开 DeepSeek..." : "复制受限，请手动粘贴已选中的文本");
-
-    // 紧跟用户操作打开，避免被浏览器弹窗拦截
-    const opened = window.open("https://chat.deepseek.com/", "_blank");
-    if (opened) {
-      try {
-        opened.opener = null;
-      } catch (e) {}
-    } else {
-      showToast("弹窗被拦截，请手动访问 chat.deepseek.com");
-    }
-  };
-
-  const homeBtn = document.getElementById("btnCopyDeepseek");
-  const settingsBtn = document.getElementById("btnSettingsDeepseek");
-  if (homeBtn) homeBtn.addEventListener("click", handleExport);
-  if (settingsBtn) settingsBtn.addEventListener("click", handleExport);
+async function scanCacheSizes() {
+  let usefulBytes = 0;
+  let uselessBytes = 0;
+  if ('caches' in window) {
+    try {
+      const keys = await caches.keys();
+      for (const key of keys) {
+        const cache = await caches.open(key);
+        const requests = await cache.keys();
+        const estimated = requests.length * 18 * 1024;
+        if (key === USEFUL_CACHE_NAME) usefulBytes += estimated;
+        else uselessBytes += estimated;
+      }
+    } catch (_) {}
+  }
+  const usefulEl = $('sizeUseful');
+  const uselessEl = $('sizeUseless');
+  if (usefulEl) usefulEl.textContent = formatBytes(usefulBytes);
+  if (uselessEl) uselessEl.textContent = formatBytes(uselessBytes);
 }
 
+function initCacheManager() {
+  const scanBtn = $('btnScanCache');
+  if (scanBtn) scanBtn.addEventListener('click', () => {
+    scanCacheSizes();
+    showToast('缓存扫描已完成');
+  });
+
+  const cleanBtn = $('btnCleanCache');
+  if (!cleanBtn) return;
+
+  cleanBtn.addEventListener('click', async () => {
+    const cleanUseful = $('chkCacheUseful').checked;
+    const cleanUseless = $('chkCacheUseless').checked;
+    if (!cleanUseful && !cleanUseless) {
+      showToast('请至少勾选一项要清理的缓存');
+      return;
+    }
+    const items = [];
+    if (cleanUseful) items.push('· 当前版本离线页面缓存（下次联网会自动重建）');
+    if (cleanUseless) items.push('· 旧版本残留缓存');
+    if (!confirm(`确认清理所选缓存？\n\n${items.join('\n')}`)) return;
+
+    if ('caches' in window) {
+      try {
+        const keys = await caches.keys();
+        for (const key of keys) {
+          const shouldDelete = key === USEFUL_CACHE_NAME ? cleanUseful : cleanUseless;
+          if (shouldDelete) await caches.delete(key);
+        }
+      } catch (_) {}
+    }
+    await scanCacheSizes();
+    showToast('所选缓存已清理完毕');
+  });
+}
+
+/* ===================== DeepSeek 一键导出 ===================== */
 async function copyText(text) {
   try {
     if (navigator.clipboard && window.isSecureContext) {
       await navigator.clipboard.writeText(text);
       return true;
     }
-  } catch (e) {}
-
-  // 降级方案：WebView / 旧版浏览器仍可复制
+  } catch (_) {}
   try {
-    const textarea = document.createElement("textarea");
+    const textarea = document.createElement('textarea');
     textarea.value = text;
-    textarea.setAttribute("readonly", "");
-    textarea.style.position = "fixed";
-    textarea.style.opacity = "0";
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
     document.body.appendChild(textarea);
     textarea.select();
     textarea.setSelectionRange(0, text.length);
-    const ok = document.execCommand("copy");
+    const ok = document.execCommand('copy');
     document.body.removeChild(textarea);
     return ok;
-  } catch (e) {
+  } catch (_) {
     return false;
   }
 }
 
-function showToast(msg) {
-  const toast = document.getElementById("toast");
-  if (!toast) return;
-  toast.textContent = msg;
-  toast.classList.remove("hidden");
-  clearTimeout(toast._hideTimer);
-  toast._hideTimer = setTimeout(() => {
-    toast.classList.add("hidden");
-  }, 2400);
+async function exportDeepseek() {
+  const [exercises, plans, sessions] = await Promise.all([
+    getAll('exercises'), getAll('plans'), getAll('sessions')
+  ]);
+  const exerciseMap = new Map(exercises.map(e => [e.id, e]));
+  const lines = [
+    `【FitLog v${APP_VERSION} 训练数据】`,
+    `导出时间：${new Date().toLocaleString('zh-CN')}`,
+    `动作库：${exercises.length} 个动作 · 课程：${plans.length} 套 · 训练记录：${sessions.length} 条`,
+    `------------------------`,
+    `一、动作库`,
+    ...exercises.map((e, i) => `${i + 1}. ${e.name}（${e.muscle}）| ${e.pureVideo ? '纯视频跟练，统计参数暂不启用' : `${typeLabel(e.type)} | 默认 ${e.defaultTarget?.sets ?? 3}组 × ${e.defaultTarget?.target ?? 12} | 休息 ${e.defaultTarget?.restSeconds ?? 45}秒`}`),
+    `------------------------`,
+    `二、训练课程`,
+    ...plans.map((p, i) => `${i + 1}. ${p.name}：${(p.items || []).map(item => {
+      const e = exerciseMap.get(item.exerciseId);
+      return `${e?.name || '已删除动作'} ${item.sets}组×${item.target}${e?.type === 'time' ? '秒' : '次'}/休息${item.restSeconds}秒`;
+    }).join('、')}`),
+    `------------------------`,
+    `三、最近训练`,
+    ...sessions.slice(-5).map(s => `${dateLabel(s.startedAt)} | ${s.planName || '自由训练'} | ${Math.round((s.durationSeconds || 0) / 60)}分钟 | ${(s.exercises || []).length}个动作`),
+    `------------------------`,
+    `请作为专业健身教练，基于以上动作库、课程编排与训练记录，分析训练强度、肌群覆盖和恢复安排是否合理，并给出具体改进建议：`
+  ];
+
+  const text = lines.join('\n');
+  const copied = await copyText(text);
+  showToast(copied ? '训练数据已复制，正在打开 DeepSeek...' : '复制受限，请手动粘贴已选中的文本');
+  const opened = window.open('https://chat.deepseek.com/', '_blank');
+  if (opened) {
+    try { opened.opener = null; } catch (_) {}
+  } else {
+    showToast('弹窗被拦截，请手动访问 chat.deepseek.com');
+  }
 }
+
+async function refreshCurrentPage() {
+  await renderHome();
+  if (currentPage === 'exercises') await renderExercises();
+  if (currentPage === 'plans') await renderPlans();
+  if (currentPage === 'history') await renderHistory();
+  if (currentPage === 'data') await updateStorageStatus();
+}
+
+function bindEvents() {
+  document.querySelectorAll('.nav-item').forEach(btn => btn.addEventListener('click', () => navigate(btn.dataset.page)));
+  document.querySelectorAll('[data-go]').forEach(btn => btn.addEventListener('click', () => navigate(btn.dataset.go)));
+  document.querySelectorAll('[data-close]').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.close;
+    if (id === 'exerciseDialog') setVideoPreviewSrc(null);
+    if (id === 'detailDialog' || id === 'runnerDialog') stopAllVideos();
+    closeDialog(id);
+  }));
+  $('homeStartBtn').addEventListener('click', () => navigate('plans'));
+
+  // 动作库事件
+  $('addExerciseBtn').addEventListener('click', () => openExerciseEditor());
+  $('exerciseForm').addEventListener('submit', saveExercise);
+  $('exerciseSearch').addEventListener('input', renderExercises);
+  $('muscleFilter').addEventListener('change', renderExercises);
+
+  $('addCustomCategoryBtn').addEventListener('click', async () => {
+    const cat = prompt('请输入新的动作分类名称（如：臀腿、腰腹、胸、背、肩、手臂）：');
+    if (cat && cat.trim()) {
+      await addCustomCategory(cat.trim());
+      showToast(`已添加分类“${cat.trim()}”`);
+    }
+  });
+
+  $('exercisePureVideo').addEventListener('change', applyPureVideoMode);
+
+  $('exerciseVideoFile').addEventListener('change', e => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 25 * 1024 * 1024) {
+      showToast('视频超过 25MB，建议选较短示范视频或填视频链接');
+    }
+    draftExerciseVideoBlob = file;
+    $('exerciseVideoUrl').value = '';
+    setVideoPreviewSrc(file);
+  });
+
+  $('exerciseVideoUrl').addEventListener('input', e => {
+    const url = e.target.value.trim();
+    if (url) {
+      draftExerciseVideoBlob = null;
+      $('exerciseVideoFile').value = '';
+      setVideoPreviewSrc(url);
+    } else if (!draftExerciseVideoBlob) {
+      setVideoPreviewSrc(null);
+    }
+  });
+
+  $('clearExerciseVideoBtn').addEventListener('click', () => {
+    draftExerciseVideoBlob = null;
+    $('exerciseVideoFile').value = '';
+    $('exerciseVideoUrl').value = '';
+    setVideoPreviewSrc(null);
+  });
+
+  $('tempoPresetSelect').addEventListener('change', e => {
+    const key = e.target.value;
+    if (!key || !TEMPO_PRESETS[key]) return;
+    renderTempoPhaseEditor(TEMPO_PRESETS[key]);
+    showToast('已套用节拍模板，可按需调整秒数或阶段');
+  });
+
+  $('addTempoPhaseBtn').addEventListener('click', () => {
+    const current = collectTempoPhasesFromEditor();
+    current.push({ label: '呼气发力', seconds: 2, countOut: false, voice: '呼气发力' });
+    renderTempoPhaseEditor(current);
+  });
+
+  $('tempoPhaseList').addEventListener('click', e => {
+    const delBtn = e.target.closest('[data-remove-phase]');
+    if (!delBtn) return;
+    const idx = Number(delBtn.dataset.removePhase);
+    const current = collectTempoPhasesFromEditor();
+    current.splice(idx, 1);
+    renderTempoPhaseEditor(current);
+  });
+
+  // 动作详情 Tab 与图表切换
+  $('detailTabs').addEventListener('click', e => {
+    const tabBtn = e.target.closest('[data-detail-tab]');
+    if (!tabBtn || !activeDetailExerciseId) return;
+    showExerciseDetail(activeDetailExerciseId, tabBtn.dataset.detailTab, activeChartMetric);
+  });
+
+  $('detailContent').addEventListener('click', e => {
+    const metricBtn = e.target.closest('[data-chart-metric]');
+    if (!metricBtn || !activeDetailExerciseId) return;
+    showExerciseDetail(activeDetailExerciseId, 'history', metricBtn.dataset.chartMetric);
+  });
+
+  // 课程事件
+  $('addPlanBtn').addEventListener('click', () => openPlanEditor());
+  $('planForm').addEventListener('submit', savePlan);
+  $('planExerciseSearch').addEventListener('input', () => {
+    syncDraftItemsFromDom();
+    renderPlanEditorLists();
+  });
+
+  $('toggleQuickCustomBtn').addEventListener('click', () => {
+    const panel = $('quickCustomPanel');
+    const isHidden = panel.classList.toggle('hidden');
+    $('quickCustomArrow').textContent = isHidden ? '▾' : '▴';
+  });
+
+  $('saveQuickCustomBtn').addEventListener('click', handleQuickCustomExerciseForPlan);
+
+  $('planExerciseChoices').addEventListener('change', async e => {
+    const box = e.target.closest('.plan-ex-check');
+    if (!box) return;
+    syncDraftItemsFromDom();
+    const id = box.value;
+    if (box.checked) {
+      if (!draftPlanItems.some(i => i.exerciseId === id)) {
+        const ex = (await getAll('exercises')).find(x => x.id === id);
+        draftPlanItems.push({
+          exerciseId: id,
+          sets: ex?.defaultTarget?.sets ?? 3,
+          target: ex?.defaultTarget?.target ?? 12,
+          restSeconds: ex?.defaultTarget?.restSeconds ?? 45
+        });
+      }
+    } else {
+      draftPlanItems = draftPlanItems.filter(i => i.exerciseId !== id);
+    }
+    await renderPlanEditorLists();
+  });
+
+  $('selectedPlanItems').addEventListener('click', async e => {
+    const upBtn = e.target.closest('[data-move-up]');
+    const downBtn = e.target.closest('[data-move-down]');
+    const remBtn = e.target.closest('[data-remove-sel]');
+    if (!upBtn && !downBtn && !remBtn) return;
+    syncDraftItemsFromDom();
+    if (upBtn) {
+      const idx = Number(upBtn.dataset.moveUp);
+      if (idx > 0) {
+        [draftPlanItems[idx - 1], draftPlanItems[idx]] = [draftPlanItems[idx], draftPlanItems[idx - 1]];
+        await renderPlanEditorLists();
+      }
+    } else if (downBtn) {
+      const idx = Number(downBtn.dataset.moveDown);
+      if (idx < draftPlanItems.length - 1) {
+        [draftPlanItems[idx], draftPlanItems[idx + 1]] = [draftPlanItems[idx + 1], draftPlanItems[idx]];
+        await renderPlanEditorLists();
+      }
+    } else if (remBtn) {
+      const idx = Number(remBtn.dataset.removeSel);
+      draftPlanItems.splice(idx, 1);
+      await renderPlanEditorLists();
+    }
+  });
+
+  // 执行器与数据备份事件
+  $('runnerCloseBtn').addEventListener('click', closeRunner);
+  $('exportJsonBtn').addEventListener('click', exportJson);
+  $('exportCsvBtn').addEventListener('click', exportCsv);
+  $('btnDeepseekExport').addEventListener('click', exportDeepseek);
+  $('importJsonInput').addEventListener('change', event => importJson(event.target.files?.[0]));
+
+  const testBeepBtn = $('btnTestBeep');
+  if (testBeepBtn) testBeepBtn.addEventListener('click', () => {
+    unlockAudio();
+    playBeep(880, 160, 2);
+    showToast('已触发滴滴提示音');
+  });
+  const testVoiceBtn = $('btnTestVoice');
+  if (testVoiceBtn) testVoiceBtn.addEventListener('click', () => {
+    unlockAudio();
+    const voice = pickLocalVoice();
+    const source = voice && voice.localService ? '本地语音' : '系统语音';
+    speak(`${source}测试开始。第1次，第2次，第3次。`, true);
+    playCountCue();
+    showToast(`正在使用${source}播报，请检查手机音量`);
+  });
+
+  // 切后台只暂停；退出页面/返回缓存页时彻底关闭视频声音
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) pauseAllVideos();
+  });
+  window.addEventListener('pagehide', stopAllVideos);
+  window.addEventListener('beforeunload', stopAllVideos);
+  window.addEventListener('pageshow', event => {
+    if (event.persisted) stopAllVideos();
+  });
+
+  document.body.addEventListener('click', async event => {
+    const target = event.target.closest('button');
+    if (!target) return;
+    if (target.dataset.exerciseDetail) showExerciseDetail(target.dataset.exerciseDetail, 'info', 'primary');
+    if (target.dataset.editExercise) {
+      const e = (await getAll('exercises')).find(x => x.id === target.dataset.editExercise);
+      if (e) openExerciseEditor(e);
+    }
+    if (target.dataset.deleteExercise) {
+      const id = target.dataset.deleteExercise;
+      const plans = await getAll('plans');
+      if (plans.some(p => (p.items || []).some(i => i.exerciseId === id))) {
+        showToast('该动作正在课程中使用，请先从课程移除');
+        return;
+      }
+      if (confirm('确定删除这个动作吗？')) {
+        await remove('exercises', id);
+        await renderExercises();
+        showToast('动作已删除');
+      }
+    }
+    if (target.dataset.editPlan) {
+      const p = (await getAll('plans')).find(x => x.id === target.dataset.editPlan);
+      if (p) openPlanEditor(p);
+    }
+    if (target.dataset.deletePlan && confirm('确定删除这套课程吗？')) {
+      await remove('plans', target.dataset.deletePlan);
+      await renderPlans();
+      showToast('课程已删除');
+    }
+    if (target.dataset.startPlan) startPlan(target.dataset.startPlan);
+    if (target.dataset.sessionDetail) showSessionDetail(target.dataset.sessionDetail);
+  });
+
+  window.addEventListener('beforeinstallprompt', event => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+    $('installBtn').classList.remove('hidden');
+  });
+  $('installBtn').addEventListener('click', async () => {
+    if (!deferredInstallPrompt) {
+      showToast('请使用浏览器菜单中的“安装应用”或“添加到主屏幕”');
+      return;
+    }
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    $('installBtn').classList.add('hidden');
+  });
+}
+
+async function init() {
+  initAudioUnlock();
+  initPullRefresh();
+  initCacheManager();
+  bindEvents();
+
+  const versionEl = $('appVersion');
+  if (versionEl) versionEl.textContent = `v${APP_VERSION}`;
+  const versionDataEl = $('appVersionData');
+  if (versionDataEl) versionDataEl.textContent = `v${APP_VERSION}`;
+
+  try {
+    db = await openDatabase();
+    await seedData();
+    await populateCategorySelects();
+    await renderHome();
+    restoreSavedPage();
+    $('storageStatus').textContent = '本地数据库已连接。';
+    await scanCacheSizes();
+  } catch (error) {
+    console.error(error);
+    alert(`FitLog初始化失败：${error.message}。请使用较新的Chrome浏览器，并确认未处于无痕模式。`);
+  }
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    navigator.serviceWorker.register('./sw.js').catch(error => console.warn('Service Worker注册失败', error));
+  }
+}
+
+document.addEventListener('DOMContentLoaded', init);

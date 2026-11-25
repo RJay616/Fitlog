@@ -1,184 +1,312 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <meta name="theme-color" content="#1e3a2f" />
-  <title>TaiChiFlow v1.2 - 气功太极与经络跟练</title>
-  <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="apple-touch-icon" href="icon-192.png" />
-  <link rel="stylesheet" href="styles.css" />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#142b45">
+  <meta name="description" content="FitLog 私人运动记录与训练指导工具">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <title>FitLog · 我的私人运动教练</title>
 </head>
 <body>
-  <header class="app-header">
-    <div class="brand">
-      <span class="brand-logo">气</span>
-      <span class="brand-name">TaiChiFlow</span>
+  <header class="topbar">
+    <div class="brand"><div class="brand-mark">F</div><div><strong>FitLog</strong><small>我的私人运动教练</small></div></div>
+    <div class="topbar-actions">
+      <span class="version-badge" id="appVersion">v1.2</span>
+      <button id="installBtn" class="install-btn hidden" type="button">安装</button>
     </div>
-    <span class="version-badge" id="appVersionBadge">v1.2</span>
   </header>
-
   <div id="pullIndicator" class="pull-indicator">下拉刷新当前页面...</div>
 
-  <main id="appContainer" class="app-container">
-    <!-- 1. 主界面：训练与跟练 -->
-    <section id="view-home" class="view-section active">
-      <div class="card hero-card">
-        <h2>今日养生跟练</h2>
-        <p id="homeSubStatus">包含八段锦、经络拍打与基础太极流，支持组间休息倒计时、滴滴提醒与离线语音计数。</p>
-        <div class="btn-row">
-          <button id="btnStartWorkout" class="btn primary">开始全套训练</button>
-          <button id="btnCopyDeepseek" class="btn secondary">复制数据并跳转 DeepSeek</button>
-          <button id="btnHomeCache" class="btn secondary">缓存清理</button>
-        </div>
+  <main id="appMain">
+    <section id="page-home" class="page active">
+      <div class="hero-card">
+        <div class="eyebrow">TODAY · 今天</div>
+        <h1>让运动成为习惯。</h1>
+        <p>记录每一组训练，慢慢积累自己的进步。</p>
+        <button class="primary-btn" id="homeStartBtn">开始训练 <span>→</span></button>
       </div>
-
-      <!-- 实时训练播放器面板 -->
-      <div id="playerPanel" class="card player-card hidden">
-        <div class="player-header">
-          <span id="playerStepTag" class="tag">动作 1/3</span>
-          <button id="btnExitPlayer" class="btn danger small">退出训练</button>
-        </div>
-        <h3 id="playerActionTitle">准备就绪</h3>
-        <p id="playerActionDesc" class="muted">请跟随语音与画面提示调整呼吸</p>
-
-        <!-- 视频跟练容器 -->
-        <div id="videoWrapper" class="video-wrapper hidden">
-          <video id="actionVideo" playsinline controls preload="metadata"></video>
-        </div>
-
-        <!-- 计时 / 计数 / 组间休息主显示区 -->
-        <div class="timer-display">
-          <div id="timerModeLabel" class="timer-label">动作进行中</div>
-          <div id="timerValue" class="timer-number">00</div>
-          <div id="timerUnit" class="timer-unit">秒 / 次</div>
-        </div>
-
-        <div class="btn-row">
-          <button id="btnPrevStep" class="btn ghost">上一个</button>
-          <button id="btnPauseResume" class="btn primary">暂停</button>
-          <button id="btnNextStep" class="btn ghost">下一个 / 跳过休息</button>
-        </div>
+      <div class="stats-grid">
+        <article class="stat-card"><span>本周训练</span><strong id="weekSessions">0</strong><small>次</small></article>
+        <article class="stat-card"><span>本周运动</span><strong id="weekMinutes">0</strong><small>分钟</small></article>
+        <article class="stat-card"><span>累计训练</span><strong id="totalSessions">0</strong><small>次</small></article>
       </div>
-
-      <!-- 动作列表预览 -->
-      <div class="card">
-        <div class="section-title-row">
-          <h3>当前训练编排</h3>
-          <span id="refreshTimestamp" class="muted small-text">已就绪</span>
-        </div>
-        <ul id="routineList" class="routine-list"></ul>
+      <div class="section-heading"><h2>快捷入口</h2></div>
+      <div class="quick-grid">
+        <button class="quick-card" data-go="exercises"><span class="quick-icon">▤</span><b>动作库</b><small>视频、要领与节拍</small></button>
+        <button class="quick-card" data-go="plans"><span class="quick-icon">▦</span><b>训练课程</b><small>组合或自定义动作</small></button>
+        <button class="quick-card" data-go="history"><span class="quick-icon">◷</span><b>训练历史</b><small>回顾每次训练</small></button>
+        <button class="quick-card" data-go="data"><span class="quick-icon">⇧</span><b>数据备份</b><small>导出或恢复数据</small></button>
+        <button class="quick-card" data-go="data"><span class="quick-icon">♻</span><b>缓存清理</b><small>分级清理缓存</small></button>
       </div>
+      <div class="section-heading"><h2>最近训练</h2><button class="text-btn" data-go="history">全部记录</button></div>
+      <div id="recentSessions" class="list-card empty-state">还没有训练记录，完成第一次训练后会显示在这里。</div>
     </section>
 
-    <!-- 2. 动作元件管理界面 -->
-    <section id="view-builder" class="view-section">
-      <div class="card">
-        <h3>新增动作元件</h3>
-        <form id="actionForm" class="form-grid">
-          <label class="form-item">
-            <span>动作名称</span>
-            <input type="text" id="inputActionName" placeholder="例如：八段锦 - 双手托天理三焦" required />
-          </label>
-
-          <label class="form-item">
-            <span>选择本地视频文件（可选）</span>
-            <input type="file" id="inputVideoFile" accept="video/*" />
-            <small class="muted small-text">视频会保存在本机浏览器数据库中，刷新页面后仍可继续跟练。</small>
-          </label>
-
-          <!-- 需求5：纯视频跟练勾选框 -->
-          <label class="checkbox-item highlight-box">
-            <input type="checkbox" id="chkPureVideoMode" />
-            <div>
-              <strong>纯视频跟练</strong>
-              <p class="muted small-text">勾选后，下方计时/计数/休息参数将变灰失效，直接跟随视频完整练习。</p>
-            </div>
-          </label>
-
-          <!-- 参数组（勾选纯视频跟练时整体禁用变灰） -->
-          <div id="paramGroupBox" class="param-group">
-            <label class="form-item">
-              <span>动作时长（秒）</span>
-              <input type="number" id="inputDuration" value="30" min="5" max="600" />
-            </label>
-            <label class="form-item">
-              <span>目标计数（次，0表示仅计时）</span>
-              <input type="number" id="inputReps" value="8" min="0" max="100" />
-            </label>
-            <label class="form-item">
-              <span>组间休息倒计时（秒）</span>
-              <input type="number" id="inputRest" value="10" min="0" max="180" />
-            </label>
-          </div>
-
-          <button type="submit" class="btn primary full">添加到训练编排</button>
-        </form>
+    <section id="page-exercises" class="page">
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow">EXERCISES</div>
+          <h1>动作库</h1>
+          <p>管理动作、教学视频、呼吸节拍与历史趋势。</p>
+        </div>
+        <button id="addExerciseBtn" class="primary-small">＋ 添加</button>
       </div>
+      <div class="filter-row">
+        <input id="exerciseSearch" class="search-input" placeholder="搜索动作名称、分类或要领">
+        <select id="muscleFilter">
+          <option value="全部">全部分类</option>
+        </select>
+      </div>
+      <div id="exerciseList" class="stack-list"></div>
     </section>
 
-    <!-- 3. 设置与分级缓存清理界面 -->
-    <section id="view-settings" class="view-section">
-      <div class="card">
-        <h3>手机缓存管理（分级清理）</h3>
-        <p class="muted">入口：底部导航「设置与缓存」，或首页「缓存清理」按钮。区分核心离线资源与临时冗余缓存，支持按需勾选清理。</p>
-
-        <div class="cache-group">
-          <label class="cache-item useful">
-            <input type="checkbox" id="chkCacheUseful" />
-            <div class="cache-info">
-              <div class="cache-title-row">
-                <strong>有用缓存（核心离线资源与训练记录）</strong>
-                <span id="sizeUseful" class="badge green">计算中...</span>
-              </div>
-              <p class="muted small-text">包含离线界面外壳（App Shell）、用户自定义动作配置及历史训练统计，清理后需重新配置。</p>
-            </div>
-          </label>
-
-          <label class="cache-item useless">
-            <input type="checkbox" id="chkCacheUseless" checked />
-            <div class="cache-info">
-              <div class="cache-title-row">
-                <strong>无用缓存（临时视频流片段与过期日志）</strong>
-                <span id="sizeUseless" class="badge orange">计算中...</span>
-              </div>
-              <p class="muted small-text">包含临时预览产生的 Blob 缓存、旧版本残余缓存与调试日志，清理不影响正常使用。</p>
-            </div>
-          </label>
+    <section id="page-plans" class="page">
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow">WORKOUT PLANS</div>
+          <h1>训练课程</h1>
+          <p>把常用或自定义动作组合成专属课程。</p>
         </div>
+        <button id="addPlanBtn" class="primary-small">＋ 新建</button>
+      </div>
+      <div id="planList" class="stack-list"></div>
+    </section>
 
-        <div class="btn-row">
-          <button id="btnScanCache" class="btn ghost">重新扫描缓存</button>
-          <button id="btnCleanCache" class="btn danger">清理所选缓存</button>
+    <section id="page-history" class="page">
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow">HISTORY</div>
+          <h1>训练历史</h1>
+          <p>每一次完成，都是进步的证据。</p>
         </div>
       </div>
+      <div class="stats-grid compact-stats">
+        <article class="stat-card"><span>累计训练</span><strong id="historyTotal">0</strong><small>次</small></article>
+        <article class="stat-card"><span>累计时长</span><strong id="historyMinutes">0</strong><small>分钟</small></article>
+      </div>
+      <div id="historyList" class="stack-list"></div>
+    </section>
 
-      <div class="card">
-        <h3>语音与提示音自检</h3>
-        <p class="muted small-text">计数会同时触发双短提示音；语音采用本地声音优先 + 队列看门狗，减少断断续续。训练前请先测试并把手机媒体音量调好。</p>
-        <div class="btn-row">
-          <button id="btnTestBeep" class="btn secondary">测试滴滴倒计时音</button>
-          <button id="btnTestVoice" class="btn secondary">测试语音播报与计数</button>
+    <section id="page-data" class="page">
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow">YOUR DATA</div>
+          <h1>数据与备份</h1>
+          <p>数据保存在当前手机浏览器中，请定期备份。</p>
         </div>
       </div>
-
-      <div class="card">
-        <h3>版本与数据导出</h3>
-        <p class="muted small-text">当前版本：<strong id="settingsVersionText">v1.2</strong>（小改动 x.y 递增；大改版从 2.1 开始）</p>
-        <button id="btnSettingsDeepseek" class="btn primary full">一键复制训练数据并跳转 DeepSeek</button>
+      <div class="info-card">
+        <b>本地数据说明</b>
+        <p>FitLog 不会自动把训练数据上传到服务器。清理浏览器数据、卸载浏览器或更换手机可能导致记录丢失，请定期导出 JSON 备份（JSON 备份自动跳过大体积本地视频文件以保证导出流畅）。</p>
+      </div>
+      <div class="action-list">
+        <button id="exportJsonBtn" class="action-row"><span>⇩</span><div><b>导出完整备份（JSON）</b><small>包含动作配置、课程和训练记录</small></div><strong>›</strong></button>
+        <button id="exportCsvBtn" class="action-row"><span>▤</span><div><b>导出训练明细（CSV）</b><small>可用 Excel 打开</small></div><strong>›</strong></button>
+        <button id="btnDeepseekExport" class="action-row"><span>✦</span><div><b>复制数据并跳转 DeepSeek</b><small>分析训练强度、肌群覆盖与恢复安排</small></div><strong>›</strong></button>
+        <label class="action-row file-label"><span>⇧</span><div><b>从备份恢复（JSON）</b><small>恢复前会覆盖当前数据</small></div><strong>›</strong><input id="importJsonInput" type="file" accept="application/json,.json"></label>
+      </div>
+      <div class="info-card">
+        <b>缓存清理（分级清理）</b>
+        <p>入口：底部「我的」→ 数据与备份，或首页「缓存清理」快捷卡片。勾选后点「清理所选缓存」。</p>
+        <label class="cache-row"><input type="checkbox" id="chkCacheUseful" checked><span><b>有用缓存</b>：当前版本离线页面（清理后联网会自动重建）<em id="sizeUseful">计算中...</em></span></label>
+        <label class="cache-row"><input type="checkbox" id="chkCacheUseless"><span><b>无用缓存</b>：旧版本残留缓存（可安全清理）<em id="sizeUseless">计算中...</em></span></label>
+        <div class="cache-actions"><button id="btnScanCache" class="small-btn">重新扫描</button><button id="btnCleanCache" class="small-btn danger-text">清理所选缓存</button></div>
+      </div>
+      <div class="info-card">
+        <b>语音与提示音自检</b>
+        <p>计数和组间倒计时会同时播放滴滴提示音；语音优先使用系统本地中文声音。训练前请测试并调好媒体音量。</p>
+        <div class="cache-actions"><button id="btnTestBeep" class="small-btn">测试滴滴音</button><button id="btnTestVoice" class="small-btn">测试语音计数</button></div>
+      </div>
+      <div class="info-card">
+        <b>版本信息</b>
+        <p>FitLog <span id="appVersionData">v1.2</span> · PWA · IndexedDB 本地存储（小版本 1.1、1.2…，大改版从 2.1 起）</p>
+        <p id="storageStatus">正在检查本地数据库……</p>
       </div>
     </section>
   </main>
 
-  <!-- 底部导航栏（维持哈希状态，下拉刷新不跳回主界面） -->
-  <nav class="bottom-nav">
-    <button class="nav-btn active" data-target="view-home">训练主页</button>
-    <button class="nav-btn" data-target="view-builder">动作元件</button>
-    <button class="nav-btn" data-target="view-settings">设置与缓存</button>
+  <nav class="bottom-nav" aria-label="主导航">
+    <button class="nav-item active" data-page="home"><span>⌂</span><small>首页</small></button>
+    <button class="nav-item" data-page="exercises"><span>▤</span><small>动作</small></button>
+    <button class="nav-item" data-page="plans"><span>▦</span><small>课程</small></button>
+    <button class="nav-item" data-page="history"><span>◷</span><small>记录</small></button>
+    <button class="nav-item" data-page="data"><span>⚙</span><small>我的</small></button>
   </nav>
 
-  <div id="toast" class="toast hidden"></div>
+  <!-- 添加 / 编辑动作弹窗 -->
+  <dialog id="exerciseDialog" class="app-dialog">
+    <form id="exerciseForm" method="dialog">
+      <div class="dialog-head">
+        <h2 id="exerciseDialogTitle">添加动作</h2>
+        <button type="button" class="icon-btn" data-close="exerciseDialog">×</button>
+      </div>
+      <input type="hidden" id="exerciseId">
 
-  <script src="app.js"></script>
+      <label>动作名称
+        <input id="exerciseName" required maxlength="50" placeholder="例如：弹力带后踢、凯格尔收缩">
+      </label>
+
+      <div class="form-row-2">
+        <label>动作分类（臀腿/腰腹/胸/手臂等）
+          <div class="inline-select-group">
+            <select id="exerciseMuscle"></select>
+            <button type="button" id="addCustomCategoryBtn" class="mini-outline-btn" title="新增自定义分类">＋分类</button>
+          </div>
+        </label>
+        <label>记录类型
+          <select id="exerciseType">
+            <option value="reps">次数型</option>
+            <option value="weight">负重型</option>
+            <option value="time">时间型</option>
+            <option value="side">左右侧型</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="form-section-box">
+        <div class="box-title">默认目标参数（加入课程时自动带入）</div>
+        <div class="form-row-4">
+          <label>组数<input id="exDefaultSets" type="number" min="1" max="20" value="3"></label>
+          <label>次数/秒<input id="exDefaultTarget" type="number" min="1" max="999" value="12"></label>
+          <label>重量kg<input id="exDefaultWeight" type="number" min="0" max="999" step="0.5" value="0"></label>
+          <label>休息秒<input id="exDefaultRest" type="number" min="0" max="600" value="45"></label>
+        </div>
+      </div>
+
+      <div class="form-section-box">
+        <div class="box-title">教学视频（本地上传或链接）</div>
+        <label class="inline-label pure-video-toggle">
+          <span>纯视频跟练（勾选后其他参数变灰，暂不统计）</span>
+          <input id="exercisePureVideo" type="checkbox">
+        </label>
+        <input id="exerciseVideoFile" type="file" accept="video/*">
+        <input id="exerciseVideoUrl" type="url" placeholder="或粘贴视频直链（可选）">
+        <div id="exerciseVideoPreviewWrap" class="video-preview-wrap hidden">
+          <video id="exerciseVideoPreview" controls playsinline muted loop></video>
+          <button type="button" id="clearExerciseVideoBtn" class="small-btn danger-text">移除视频</button>
+        </div>
+      </div>
+
+      <label>动作要领
+        <textarea id="exerciseNotes" rows="3" placeholder="写下标准姿势、发力点、避免代偿的注意事项……"></textarea>
+      </label>
+
+      <label>专属语音播报（动作开始前播报提醒）
+        <textarea id="exerciseCue" rows="2" placeholder="例如：注意背部挺直，发力时呼气，绝不憋气！"></textarea>
+      </label>
+
+      <div class="form-section-box">
+        <div class="box-header-inline">
+          <span class="box-title">呼吸与节拍节奏引导</span>
+          <select id="tempoPresetSelect" class="preset-select">
+            <option value="">套用节拍模板…</option>
+            <option value="pushup">俯卧撑（吸气下放3秒 · 呼气上撑1秒）</option>
+            <option value="kegel">凯格尔收缩（呼气收缩3秒 · 吸气放松10秒）</option>
+            <option value="kickback">弹力带后踢（呼气后踢1秒 · 保持2秒 · 吸气回收3秒）</option>
+            <option value="squat">深蹲节奏（吸气下蹲3秒 · 停顿1秒 · 呼气站起1秒）</option>
+          </select>
+        </div>
+        <label class="inline-label">起势准备缓冲（秒）
+          <input id="exPrepSeconds" type="number" min="0" max="30" value="5">
+        </label>
+        <div id="tempoPhaseList" class="tempo-phase-list"></div>
+        <button type="button" id="addTempoPhaseBtn" class="mini-outline-btn full-width">＋ 添加呼吸/节拍阶段</button>
+      </div>
+
+      <div class="dialog-actions">
+        <button type="button" class="secondary-btn" data-close="exerciseDialog">取消</button>
+        <button type="submit" class="primary-btn">保存动作</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 新建 / 编辑课程弹窗 -->
+  <dialog id="planDialog" class="app-dialog">
+    <form id="planForm" method="dialog">
+      <div class="dialog-head">
+        <h2 id="planDialogTitle">新建课程</h2>
+        <button type="button" class="icon-btn" data-close="planDialog">×</button>
+      </div>
+      <input type="hidden" id="planId">
+      <label>课程名称
+        <input id="planName" required maxlength="60" placeholder="例如：臀腿塑形 + 盆底肌强化">
+      </label>
+
+      <!-- 课程内直接自定义动作面板 -->
+      <div class="quick-custom-box">
+        <button type="button" id="toggleQuickCustomBtn" class="quick-custom-toggle">
+          <span>＋ 动作库里没有？点此直接自定义动作并加入课程</span>
+          <strong id="quickCustomArrow">▾</strong>
+        </button>
+        <div id="quickCustomPanel" class="quick-custom-panel hidden">
+          <div class="form-row-2">
+            <input id="qcName" placeholder="新动作名称（如：单腿臀桥）" maxlength="50">
+            <select id="qcMuscle"></select>
+          </div>
+          <div class="form-row-4">
+            <select id="qcType">
+              <option value="reps">次数型</option>
+              <option value="weight">负重型</option>
+              <option value="time">时间型</option>
+              <option value="side">左右侧型</option>
+            </select>
+            <input id="qcSets" type="number" min="1" max="20" value="3" placeholder="组数" title="组数">
+            <input id="qcTarget" type="number" min="1" max="999" value="12" placeholder="次数/秒" title="目标次数或秒数">
+            <input id="qcRest" type="number" min="0" max="600" value="45" placeholder="休息秒" title="组间休息秒">
+          </div>
+          <input id="qcCue" placeholder="专属语音提示（可选，如：顶峰收缩2秒，缓慢下放）">
+          <button type="button" id="saveQuickCustomBtn" class="small-btn blue full-width">保存并加入当前课程</button>
+        </div>
+      </div>
+
+      <div class="subheading-row">
+        <span class="subheading">已选动作顺序与参数（可调顺序/改参数）</span>
+      </div>
+      <div id="selectedPlanItems" class="selected-plan-list"></div>
+
+      <div class="subheading-row">
+        <span class="subheading">从动作库勾选添加</span>
+        <input id="planExerciseSearch" class="mini-search" placeholder="筛选动作…">
+      </div>
+      <div id="planExerciseChoices" class="choice-list"></div>
+
+      <div class="dialog-actions">
+        <button type="button" class="secondary-btn" data-close="planDialog">取消</button>
+        <button type="submit" class="primary-btn">保存课程</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 动作详情 / 历史趋势弹窗 -->
+  <dialog id="detailDialog" class="app-dialog">
+    <div class="dialog-head">
+      <h2 id="detailTitle">动作详情</h2>
+      <button type="button" class="icon-btn" data-close="detailDialog">×</button>
+    </div>
+    <div id="detailTabs" class="detail-tabs hidden">
+      <button type="button" class="tab-btn active" data-detail-tab="info">动作要领与视频</button>
+      <button type="button" class="tab-btn" data-detail-tab="history">历史记录与趋势</button>
+    </div>
+    <div id="detailContent"></div>
+    <div class="dialog-actions">
+      <button type="button" class="primary-btn" data-close="detailDialog">完成</button>
+    </div>
+  </dialog>
+
+  <!-- 训练执行弹窗 -->
+  <dialog id="runnerDialog" class="runner-dialog">
+    <div class="runner-top">
+      <span id="runnerPlanName">训练进行中</span>
+      <button class="icon-btn light" id="runnerCloseBtn" type="button">×</button>
+    </div>
+    <div class="runner-progress"><div id="runnerProgressBar"></div></div>
+    <div id="runnerBody" class="runner-body"></div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js" defer></script>
 </body>
 </html>
