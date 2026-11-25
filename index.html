@@ -4,7 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#1e3a2f" />
-  <title>TaiChiFlow v1.1 - 气功太极与经络跟练</title>
+  <title>TaiChiFlow v1.2 - 气功太极与经络跟练</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -13,7 +15,7 @@
       <span class="brand-logo">气</span>
       <span class="brand-name">TaiChiFlow</span>
     </div>
-    <span class="version-badge" id="appVersionBadge">v1.1</span>
+    <span class="version-badge" id="appVersionBadge">v1.2</span>
   </header>
 
   <div id="pullIndicator" class="pull-indicator">下拉刷新当前页面...</div>
@@ -23,10 +25,11 @@
     <section id="view-home" class="view-section active">
       <div class="card hero-card">
         <h2>今日养生跟练</h2>
-        <p id="homeSubStatus">包含八段锦、经络拍打与基础太极流，支持组间倒计时与离线语音。</p>
+        <p id="homeSubStatus">包含八段锦、经络拍打与基础太极流，支持组间休息倒计时、滴滴提醒与离线语音计数。</p>
         <div class="btn-row">
           <button id="btnStartWorkout" class="btn primary">开始全套训练</button>
-          <button id="btnCopyDeepseek" class="btn secondary">一键复制数据并跳转 DeepSeek</button>
+          <button id="btnCopyDeepseek" class="btn secondary">复制数据并跳转 DeepSeek</button>
+          <button id="btnHomeCache" class="btn secondary">缓存清理</button>
         </div>
       </div>
 
@@ -81,6 +84,7 @@
           <label class="form-item">
             <span>选择本地视频文件（可选）</span>
             <input type="file" id="inputVideoFile" accept="video/*" />
+            <small class="muted small-text">视频会保存在本机浏览器数据库中，刷新页面后仍可继续跟练。</small>
           </label>
 
           <!-- 需求5：纯视频跟练勾选框 -->
@@ -117,7 +121,7 @@
     <section id="view-settings" class="view-section">
       <div class="card">
         <h3>手机缓存管理（分级清理）</h3>
-        <p class="muted">区分核心有用的离线资源与临时冗余缓存，支持按需勾选清理。</p>
+        <p class="muted">入口：底部导航「设置与缓存」，或首页「缓存清理」按钮。区分核心离线资源与临时冗余缓存，支持按需勾选清理。</p>
 
         <div class="cache-group">
           <label class="cache-item useful">
@@ -151,7 +155,7 @@
 
       <div class="card">
         <h3>语音与提示音自检</h3>
-        <p class="muted small-text">采用本地 Web Audio 蜂鸣器与队列防卡顿 TTS 引擎，解决断断续续与计数漏播问题。</p>
+        <p class="muted small-text">计数会同时触发双短提示音；语音采用本地声音优先 + 队列看门狗，减少断断续续。训练前请先测试并把手机媒体音量调好。</p>
         <div class="btn-row">
           <button id="btnTestBeep" class="btn secondary">测试滴滴倒计时音</button>
           <button id="btnTestVoice" class="btn secondary">测试语音播报与计数</button>
@@ -160,7 +164,7 @@
 
       <div class="card">
         <h3>版本与数据导出</h3>
-        <p class="muted small-text">当前版本：<strong id="settingsVersionText">v1.1</strong>（采用 x.y 语义化迭代）</p>
+        <p class="muted small-text">当前版本：<strong id="settingsVersionText">v1.2</strong>（小改动 x.y 递增；大改版从 2.1 开始）</p>
         <button id="btnSettingsDeepseek" class="btn primary full">一键复制训练数据并跳转 DeepSeek</button>
       </div>
     </section>

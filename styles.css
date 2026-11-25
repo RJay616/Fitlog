@@ -5,6 +5,13 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/* 阻止 Android Chrome 原生下拉整页刷新，刷新逻辑交给 app.js 局部处理 */
+html,
+body {
+  overscroll-behavior: none;
+  -webkit-overscroll-behavior: none;
+}
+
 :root {
   --primary: #1e3a2f;
   --primary-light: #2d5747;
@@ -22,7 +29,7 @@ body {
   background-color: var(--bg);
   color: var(--text);
   padding-bottom: 76px;
-  overscroll-behavior-y: contain;
+  touch-action: pan-y;
 }
 
 .app-header {
@@ -318,6 +325,10 @@ h3 {
   border-radius: 8px;
   font-size: 14px;
   background: #fff;
+}
+
+.form-item small {
+  font-weight: 400;
 }
 
 .checkbox-item {
