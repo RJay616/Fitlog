@@ -273,3 +273,16 @@ main{max-width:760px;margin:0 auto;padding:18px 16px 28px}
   .runner-body{padding:30px}
   .bottom-nav{left:50%;right:auto;transform:translateX(-50%);width:min(100%,760px);border-left:1px solid var(--line);border-right:1px solid var(--line)}
 }
+
+/* ===== 影院全屏：视频 + 底部按钮一起全屏，视频尽量大、按钮尽量小 ===== */
+html.theater-mode,html.theater-mode body{background:#05080f;overflow:hidden}
+html.theater-mode .runner-dialog{border-radius:0;background:#05080f;overflow:hidden}
+html.theater-mode .runner-top{padding:9px 14px}
+html.theater-mode .runner-body{padding:0 10px 6px;min-height:0;height:calc(100dvh - 62px);justify-content:flex-start;gap:0;background:#05080f}
+html.theater-mode .runner-body h2{color:#e8edf4;font-size:17px;margin:6px 0 4px}
+html.theater-mode .runner-kicker{color:#9fb0c5}
+html.theater-mode .runner-cue,html.theater-mode .tempo-banner,html.theater-mode .runner-label,html.theater-mode .runner-number,html.theater-mode .runner-inputs{display:none!important}
+html.theater-mode .runner-video{max-width:none;max-height:none;width:100%;flex:1 1 auto;min-height:0;height:auto;margin:0 auto;border-radius:10px;object-fit:contain;background:#000}
+html.theater-mode .runner-controls{margin-top:6px;gap:7px;flex:0 0 auto}
+html.theater-mode .runner-controls button{padding:8px 12px;font-size:12px;border-radius:10px}
+html.theater-mode .runner-controls .alt{background:#233247;color:#d7e2f0}
