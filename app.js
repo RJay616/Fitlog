@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.17';
+const APP_VERSION = '1.16';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -481,49 +481,6 @@ function enterVideoFullscreen(videoEl) {
   } catch (_) {}
 }
 
-// ===== 影院全屏：视频 + 底部按钮一起全屏 =====
-// 对训练对话框整体请求全屏（而非只对 video 元素），这样「重播视频 / 退出全屏 / 下一个动作」
-// 按钮和视频会一起进入全屏；配合 .theater-mode 样式放大视频、压缩按钮。
-// 关键：必须在用户点击的同步调用栈里请求，手势才有效。
-function enterTheaterFullscreen() {
-  const dlg = $('runnerDialog');
-  if (!dlg) return;
-  // 标记影院模式（样式据此放大视频、压缩按钮），即使浏览器拒绝全屏也能得到更大画面
-  document.documentElement.classList.add('theater-mode');
-  if (isVideoFullscreen()) return;
-  try {
-    if (typeof dlg.requestFullscreen === 'function') {
-      const p = dlg.requestFullscreen();
-      if (p && typeof p.catch === 'function') p.catch(() => {});
-      return;
-    }
-  } catch (_) {}
-  try {
-    if (typeof dlg.webkitRequestFullscreen === 'function') dlg.webkitRequestFullscreen();
-  } catch (_) {}
-}
-function exitTheaterFullscreen() {
-  document.documentElement.classList.remove('theater-mode');
-  try {
-    if (document.fullscreenElement && typeof document.exitFullscreen === 'function') {
-      document.exitFullscreen().catch(() => {});
-    } else if (document.webkitFullscreenElement && typeof document.webkitExitFullscreen === 'function') {
-      document.webkitExitFullscreen();
-    }
-  } catch (_) {}
-  // 同步按钮文案（若在视频阶段）
-  const btn = $('fullscreenVideoBtn');
-  if (btn) { btn.textContent = '⛶ 全屏'; }
-}
-// 监听系统全屏状态变化（用户按返回键退出时同步样式与按钮）
-document.addEventListener('fullscreenchange', () => {
-  if (!document.fullscreenElement && !document.webkitFullscreenElement) {
-    document.documentElement.classList.remove('theater-mode');
-    const btn = $('fullscreenVideoBtn');
-    if (btn) btn.textContent = '⛶ 全屏';
-  }
-});
-
 function pauseAllVideos() {
   document.querySelectorAll('video').forEach(video => {
     try { video.pause(); } catch (_) {}
@@ -566,12 +523,7 @@ async function releaseWakeLock() {
 }
 
 function openDialog(id) { const dialog = $(id); if (dialog && !dialog.open) dialog.showModal(); }
-function closeDialog(id) {
-  const dialog = $(id);
-  // 关闭训练界面时清理影院全屏，避免退出后仍停留在全屏
-  if (id === 'runnerDialog' && typeof exitTheaterFullscreen === 'function') exitTheaterFullscreen();
-  if (dialog && dialog.open) dialog.close();
-}
+function closeDialog(id) { const dialog = $(id); if (dialog && dialog.open) dialog.close(); }
 
 // 分类管理
 async function getCategories() {
@@ -1482,9 +1434,18 @@ function setupRunnerPhase(isFirstStart = false) {
       };
       // 正式跟练阶段取消静音，确保视频有声音
       videoEl.muted = false;
-      // 不再自动让视频元素单独全屏（那样会挡住底部按钮）；
-      // 全屏统一由「⛶ 全屏」按钮触发影院全屏，视频与按钮一起进入。
-      videoEl.play().catch(() => showToast('若视频未自动播放，请点视频上的播放按钮'));
+      // 视频真正开始播放时（已有用户手势上下文）再尝试全屏，成功率最高
+      videoEl.addEventListener('playing', () => {
+        enterVideoFullscreen(videoEl);
+        setTimeout(() => enterVideoFullscreen(videoEl), 200);
+        setTimeout(() => enterVideoFullscreen(videoEl), 600);
+      }, { once: true });
+      // 点击视频本身也可进入全屏（浏览器拒绝自动全屏时的兜底）
+      videoEl.addEventListener('click', () => enterVideoFullscreen(videoEl));
+      videoEl.play().then(() => {
+        enterVideoFullscreen(videoEl);
+        setTimeout(() => enterVideoFullscreen(videoEl), 350);
+      }).catch(() => showToast('若视频未自动播放，请点视频上的播放按钮'));
     } else {
       showToast('该纯视频动作没有视频，已自动跳过');
       setTimeout(() => {
@@ -1913,17 +1874,13 @@ function renderRunner() {
         video.play().catch(() => {});
       }
     };
-    // 「⛶ 全屏」按钮：切换影院全屏——视频与底部按钮一起全屏，视频放大、按钮压缩。
-    // 点击发生在用户手势同步栈里，整页全屏申请成功率最高；安卓返回键可退出。
+    // 「全屏」按钮：在用户点击的同步手势栈里请求视频全屏，成功率最高。
+    // 只做视频元素全屏（沉浸铺满），不改动训练流程；安卓返回键可退出全屏。
     const fsBtn = $('fullscreenVideoBtn');
-    if (fsBtn) {
-      const inTheater = document.documentElement.classList.contains('theater-mode');
-      fsBtn.textContent = inTheater ? '⛶ 退出全屏' : '⛶ 全屏';
-      fsBtn.onclick = () => {
-        if (document.documentElement.classList.contains('theater-mode')) exitTheaterFullscreen();
-        else enterTheaterFullscreen();
-      };
-    }
+    if (fsBtn) fsBtn.onclick = () => {
+      const video = $('runnerVideo');
+      if (video) enterVideoFullscreen(video);
+    };
   } else if (runner.phase === 'rest') {
     $('skipRestBtn').onclick = () => applyPendingAdvance();
     $('pauseRestBtn').onclick = () => {
