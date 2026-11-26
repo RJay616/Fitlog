@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.7';
+const APP_VERSION = '1.8';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -68,12 +68,6 @@ const VOICE_SETTINGS_KEY = 'fitlog-voice-settings';
 // mode: full=完整语音 / count=仅报数与关键提示 / beep=仅提示音不说话
 const voiceSettings = { mode: 'full', voiceURI: '', pitch: 0.9, rate: 1.0 };
 let voicesLoaded = false;
-
-// 训练提醒（持久化）
-const REMINDERS_KEY = 'fitlog-reminders';
-const REMINDER_DRAFT_KEY = 'fitlog-reminder-draft';
-// rules: [{ id, type:'once'|'daily'|'hourly', time:'HH:MM', start:'HH:MM', end:'HH:MM', text, enabled }]
-const reminderState = { rules: [], tickTimer: null, visBound: false };
 
 const $ = id => document.getElementById(id);
 const makeId = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -526,7 +520,6 @@ function navigate(page, options = {}) {
   if (page === 'history') renderHistory();
   if (page === 'data') {
     updateStorageStatus();
-    scanCacheSizes();
   }
   if (persist) localStorage.setItem(PAGE_STORAGE_KEY, page);
   if (options.focus) {
@@ -632,7 +625,7 @@ async function renderHome() {
 
 function sessionCardHtml(s) {
   const names = (s.exercises || []).map(e => e.name).join('、');
-  return `<article class="item-card"><div class="session-date">${escapeHtml(dateLabel(s.startedAt))}</div><div class="session-title">${escapeHtml(s.planName || '自由训练')}</div><div class="session-meta">${Math.round((s.durationSeconds || 0) / 60)} 分钟 · ${(s.exercises || []).length} 个动作</div><div class="session-exercises">${escapeHtml(names || '无动作明细')}</div><div class="card-actions"><button class="small-btn" data-session-detail="${escapeHtml(s.id)}">查看详情</button></div></article>`;
+  return `<article class="item-card"><div class="session-date">${escapeHtml(dateLabel(s.startedAt))}</div><div class="session-title">${escapeHtml(s.planName || '自由训练')}</div><div class="session-meta">${Math.round((s.durationSeconds || 0) / 60)} 分钟 · ${(s.exercises || []).length} 个动作</div><div class="session-exercises">${escapeHtml(names || '无动作明细')}</div><div class="card-actions"><button class="small-btn" data-session-detail="${escapeHtml(s.id)}">查看详情</button><button class="small-btn danger-text" data-session-delete="${escapeHtml(s.id)}">删除记录</button></div></article>`;
 }
 
 // 动作库与编辑
@@ -1368,13 +1361,11 @@ function setupRunnerPhase(isFirstStart = false) {
   }
 }
 
-// 同步更新彩色圆内数字与 1.4 风格倒计时数字（两处同时刷新）
+// 更新页面最下方的大倒计时数字
 function updateTempoNumber() {
   const val = Math.max(0, runner?.tempoSecLeft || 0);
   const main = $('runnerNumber');
   if (main) main.textContent = val;
-  const circle = $('runnerNumberCircle');
-  if (circle) circle.textContent = val;
 }
 
 // 简洁节拍：每秒滴一声掌握节奏；一次动作开始前只报纯数字（1、2、3…）
@@ -1544,7 +1535,7 @@ function renderRunner() {
     ? `<span class="side-badge">${runner.sideStage === 'right' ? '右侧' : '左侧'}</span>`
     : '';
 
-  // 工作阶段（有节拍）：上方彩色圆（描述大字+圆内数字），下方 1.4 风格倒计时区（数字两边暂停/停止）
+  // 工作阶段（有节拍）：彩色圆内只放节拍描述汉字；倒计时与暂停/停止放到页面最下方
   let centerHtml = '';
   if (runner.phase === 'work' && currentPhase) {
     const color = /^#[0-9a-f]{6}$/i.test(currentPhase.color || '') ? currentPhase.color : PHASE_COLOR.other;
@@ -1552,17 +1543,7 @@ function renderRunner() {
     centerHtml = `
       <div class="phase-circle" style="background:${color}">
         <div class="phase-circle-label">${escapeHtml(descText)}</div>
-        <div class="phase-circle-count" id="runnerNumberCircle">${Math.max(0, runner.tempoSecLeft)}</div>
       </div>
-      <div class="tempo-banner work-countdown">
-        <div class="tempo-phase-title">当前节拍倒计时</div>
-        <div class="work-countdown-row">
-          <button type="button" class="cd-side-btn cd-pause" id="workPauseBtn" title="暂停/继续">⏸</button>
-          <div class="runner-number" id="runnerNumber">${Math.max(0, runner.tempoSecLeft)}</div>
-          <button type="button" class="cd-side-btn cd-stop" id="workStopBtn" title="结束训练">⏹</button>
-        </div>
-      </div>
-      <div class="reps-progress">已完成 <b id="repsDone">${runner.completedRepsInSet}</b> / ${item.target || exercise.defaultTarget?.target || '—'} 次${split ? ` · ${runner.sideStage === 'right' ? '右侧' : '左侧'}` : ''}</div>
     `;
   }
 
@@ -1589,6 +1570,21 @@ function renderRunner() {
       : '开始';
 
   const defaultVal = item.target || exercise.defaultTarget?.target || 12;
+
+  // 工作阶段有节拍：页面最下方 = 已完成次数 + 大号黑色倒计时 + 暂停/继续（黄）+ 停止（红）
+  let workBottomHtml = '';
+  if (runner.phase === 'work' && currentPhase) {
+    workBottomHtml = `
+      <div class="work-bottom">
+        <div class="reps-progress">已完成 <b id="repsDone">${runner.completedRepsInSet}</b> / ${item.target || exercise.defaultTarget?.target || '—'} 次${split ? ` · ${runner.sideStage === 'right' ? '右侧' : '左侧'}` : ''}</div>
+        <div class="work-countdown-row">
+          <button type="button" class="cd-side-btn cd-pause" id="workPauseBtn" title="暂停/继续">⏸</button>
+          <div class="runner-number" id="runnerNumber">${Math.max(0, runner.tempoSecLeft)}</div>
+          <button type="button" class="cd-side-btn cd-stop" id="workStopBtn" title="结束训练">⏹</button>
+        </div>
+      </div>
+    `;
+  }
 
   // 工作阶段：有节拍自动结算（无需手动输入）；无节拍才显示输入框和“完成本组”
   let workControlsHtml = '';
@@ -1618,6 +1614,7 @@ function renderRunner() {
               : '完成本组后记录实际数据'
     }</div><div class="runner-number" id="runnerNumber">${numberDisplay}</div>` : ''}
     ${workControlsHtml}
+    ${workBottomHtml}
     ${runner.phase === 'prepare'
       ? `<div class="runner-controls"><button class="alt" id="skipPrepareBtn">立即开始</button></div>`
       : runner.phase === 'video'
@@ -1626,9 +1623,13 @@ function renderRunner() {
           ? `<div class="runner-controls"><button class="alt" id="skipRestBtn">跳过休息</button><button class="main" id="pauseRestBtn">暂停计时</button></div>`
           : runner.phase === 'done'
             ? `<div class="runner-controls"><button class="main" id="finishSessionBtn">保存并结束</button></div>`
-            : `<div class="runner-controls"><button class="alt" id="runnerCueBtn">重播提示</button></div>`
+            : ''
     }
   `;
+
+  // 顶部右上角「重播提示」按钮（原底部重播提示已移至此，所有阶段可用）
+  const cueBtn = $('runnerCueBtn');
+  if (cueBtn) cueBtn.onclick = () => speak(exercise.cue || exercise.notes || exercise.name, true, 'key');
 
   if (runner.phase === 'prepare') {
     $('skipPrepareBtn').onclick = () => {
@@ -1636,16 +1637,15 @@ function renderRunner() {
       setupRunnerPhase(false);
     };
   } else if (runner.phase === 'work') {
-    if ($('runnerCueBtn')) $('runnerCueBtn').onclick = () => speak(exercise.cue || exercise.notes || exercise.name, true, 'key');
     if ($('completeSetBtn')) $('completeSetBtn').onclick = completeSet;
-    // 有节拍时：1.4 倒计时区两侧的暂停/停止按钮
+    // 底部大倒计时两侧的暂停/继续、停止按钮（顶部按钮已取消）
     if ($('workPauseBtn')) {
       $('workPauseBtn').textContent = runner.paused ? '▶' : '⏸';
+      $('workPauseBtn').title = runner.paused ? '继续训练' : '暂停训练';
       $('workPauseBtn').onclick = () => {
         if (runner.paused) resumeRunner(); else pauseRunner();
-        const top = $('runnerPauseBtn');
-        if (top) { top.textContent = runner.paused ? '▶' : '⏸'; top.title = runner.paused ? '继续训练' : '暂停训练'; }
         $('workPauseBtn').textContent = runner.paused ? '▶' : '⏸';
+        $('workPauseBtn').title = runner.paused ? '继续训练' : '暂停训练';
       };
     }
     if ($('workStopBtn')) $('workStopBtn').onclick = () => {
@@ -1985,72 +1985,6 @@ async function updateStorageStatus() {
   }
 }
 
-/* ===================== 缓存分级清理 ===================== */
-const USEFUL_CACHE_NAME = `fitlog-v${APP_VERSION}-cache`;
-
-function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-async function scanCacheSizes() {
-  let usefulBytes = 0;
-  let uselessBytes = 0;
-  if ('caches' in window) {
-    try {
-      const keys = await caches.keys();
-      for (const key of keys) {
-        const cache = await caches.open(key);
-        const requests = await cache.keys();
-        const estimated = requests.length * 18 * 1024;
-        if (key === USEFUL_CACHE_NAME) usefulBytes += estimated;
-        else uselessBytes += estimated;
-      }
-    } catch (_) {}
-  }
-  const usefulEl = $('sizeUseful');
-  const uselessEl = $('sizeUseless');
-  if (usefulEl) usefulEl.textContent = formatBytes(usefulBytes);
-  if (uselessEl) uselessEl.textContent = formatBytes(uselessBytes);
-}
-
-function initCacheManager() {
-  const scanBtn = $('btnScanCache');
-  if (scanBtn) scanBtn.addEventListener('click', () => {
-    scanCacheSizes();
-    showToast('缓存扫描已完成');
-  });
-
-  const cleanBtn = $('btnCleanCache');
-  if (!cleanBtn) return;
-
-  cleanBtn.addEventListener('click', async () => {
-    const cleanUseful = $('chkCacheUseful').checked;
-    const cleanUseless = $('chkCacheUseless').checked;
-    if (!cleanUseful && !cleanUseless) {
-      showToast('请至少勾选一项要清理的缓存');
-      return;
-    }
-    const items = [];
-    if (cleanUseful) items.push('· 当前版本离线页面缓存（下次联网会自动重建）');
-    if (cleanUseless) items.push('· 旧版本残留缓存');
-    if (!confirm(`确认清理所选缓存？\n\n${items.join('\n')}`)) return;
-
-    if ('caches' in window) {
-      try {
-        const keys = await caches.keys();
-        for (const key of keys) {
-          const shouldDelete = key === USEFUL_CACHE_NAME ? cleanUseful : cleanUseless;
-          if (shouldDelete) await caches.delete(key);
-        }
-      } catch (_) {}
-    }
-    await scanCacheSizes();
-    showToast('所选缓存已清理完毕');
-  });
-}
-
 /* ===================== DeepSeek 一键导出 ===================== */
 async function copyText(text) {
   try {
@@ -2137,338 +2071,6 @@ function openDeepseekWeb() {
   } else {
     showToast('弹窗被拦截，请手动访问 chat.deepseek.com 并粘贴');
   }
-}
-
-/* ===================== 训练提醒 ===================== */
-function loadReminders() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(REMINDERS_KEY) || '{}');
-    if (saved && Array.isArray(saved.rules)) reminderState.rules = saved.rules;
-  } catch (_) {}
-}
-
-function saveReminders() {
-  try { localStorage.setItem(REMINDERS_KEY, JSON.stringify({ rules: reminderState.rules })); } catch (_) {}
-}
-
-// 恢复上次保存的提醒表单默认值
-function restoreReminderDraft() {
-  try {
-    const d = JSON.parse(localStorage.getItem(REMINDER_DRAFT_KEY) || 'null');
-    if (!d || typeof d !== 'object') return;
-    const typeSel = $('reminderType');
-    if (typeSel && d.type) typeSel.value = d.type;
-    if ($('reminderTime') && d.time) $('reminderTime').value = d.time;
-    if ($('reminderDate') && d.date) $('reminderDate').value = d.date;
-    if ($('reminderStart') && d.start) $('reminderStart').value = d.start;
-    if ($('reminderEnd') && d.end) $('reminderEnd').value = d.end;
-    if ($('reminderText')) $('reminderText').value = d.text || '';
-  } catch (_) {}
-}
-
-const firedKey = (rule, dateKey, hour) => `fitlog-fired-${rule.id}-${dateKey}${hour != null ? '-' + hour : ''}`;
-
-function wasFired(rule, dateKey, hour) {
-  try { return localStorage.getItem(firedKey(rule, dateKey, hour)) === '1'; } catch (_) { return false; }
-}
-
-function markFired(rule, dateKey, hour) {
-  try {
-    const key = firedKey(rule, dateKey, hour);
-    localStorage.setItem(key, '1');
-    setTimeout(() => { try { localStorage.removeItem(key); } catch (_) {} }, 26 * 3600 * 1000);
-  } catch (_) {}
-}
-
-function parseHHMM(s) {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(String(s || '').trim());
-  if (!m) return null;
-  return { h: Math.min(23, Math.max(0, +m[1])), min: Math.min(59, Math.max(0, +m[2])) };
-}
-
-let reminderRingTimer = null;
-
-// 响铃：连续播多轮提示音，直到用户关闭弹窗（声音兜底，确保能注意到）
-function startReminderRing() {
-  stopReminderRing();
-  unlockAudio();
-  let count = 0;
-  const ring = () => {
-    playBeep(1320, 180, 2, 150);
-    count += 1;
-    if (count >= 12) stopReminderRing();
-  };
-  ring();
-  reminderRingTimer = setInterval(ring, 900);
-}
-
-function stopReminderRing() {
-  if (reminderRingTimer) {
-    clearInterval(reminderRingTimer);
-    reminderRingTimer = null;
-  }
-}
-
-function fireReminderNotification(rule) {
-  const title = 'FitLog 训练提醒';
-  const body = rule.text || '该动一动啦！';
-  startReminderRing();
-  speak(rule.text || '该起来活动一下了', true, 'key');
-
-  // 强制弹窗提醒（不依赖系统通知是否成功）
-  const textEl = $('reminderAlertText');
-  const timeEl = $('reminderAlertTime');
-  if (textEl) textEl.textContent = body;
-  if (timeEl) timeEl.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  const dlg = $('reminderAlertDialog');
-  if (dlg && typeof dlg.showModal === 'function' && !dlg.open) {
-    try { dlg.showModal(); } catch (_) {}
-  }
-  showToast(body);
-
-  // 系统通知作为补充（后台也能收到）
-  if ('Notification' in window && Notification.permission === 'granted' && 'serviceWorker' in navigator) {
-    navigator.serviceWorker.ready.then(reg => {
-      if (reg.showNotification) {
-        reg.showNotification(title, { body, tag: 'fitlog-reminder-' + rule.id + '-' + Date.now(), icon: './icon-192.png', requireInteraction: true }).catch(() => {});
-      }
-    }).catch(() => {});
-  } else if ('Notification' in window && Notification.permission === 'granted') {
-    try { new Notification(title, { body, icon: './icon-192.png' }); } catch (_) {}
-  }
-}
-
-function checkReminders() {
-  const now = new Date();
-  const dateKey = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
-  const dateIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  const curMin = now.getHours() * 60 + now.getMinutes();
-  reminderState.rules.forEach(rule => {
-    if (!rule.enabled) return;
-    if (rule.type === 'daily' || rule.type === 'once') {
-      const t = parseHHMM(rule.time);
-      if (!t) return;
-      // ±2 分钟容错，避免后台节流错过整点；markFired 保证每条每天只响一次
-      if (Math.abs(curMin - (t.h * 60 + t.min)) <= 2) {
-        if (rule.type === 'once' && rule.date && rule.date !== dateIso) return;
-        if (!wasFired(rule, dateKey)) {
-          markFired(rule, dateKey);
-          fireReminderNotification(rule);
-        }
-      }
-    } else if (rule.type === 'hourly') {
-      const s = parseHHMM(rule.start), e = parseHHMM(rule.end);
-      if (s && e && now.getHours() >= s.h && now.getHours() <= e.h && now.getMinutes() <= 2) {
-        if (!wasFired(rule, dateKey, now.getHours())) {
-          markFired(rule, dateKey, now.getHours());
-          fireReminderNotification(rule);
-        }
-      }
-    }
-  });
-}
-
-function startReminderTicker() {
-  if (reminderState.tickTimer) clearInterval(reminderState.tickTimer);
-  checkReminders();
-  // 缩到 15 秒，提高命中率；markFired 防止重复
-  reminderState.tickTimer = setInterval(checkReminders, 15000);
-  // 回到前台时立即补检查一次
-  if (!reminderState.visBound) {
-    reminderState.visBound = true;
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) checkReminders();
-    });
-  }
-}
-
-function upcomingTriggerTimes(rule, from, hoursAhead) {
-  const out = [];
-  const limit = from.getTime() + hoursAhead * 3600 * 1000;
-  if (rule.type === 'daily' || rule.type === 'once') {
-    const t = parseHHMM(rule.time);
-    if (!t) return out;
-    for (let d = 0; d <= 2; d++) {
-      const date = new Date(from.getFullYear(), from.getMonth(), from.getDate() + d, t.h, t.min, 0, 0);
-      const ts = date.getTime();
-      if (ts <= from.getTime() + 1000 || ts > limit) continue;
-      if (rule.type === 'once') {
-        const ds = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-        if (rule.date && rule.date !== ds) continue;
-      }
-      out.push(ts);
-    }
-  } else if (rule.type === 'hourly') {
-    const s = parseHHMM(rule.start), e = parseHHMM(rule.end);
-    if (!s || !e) return out;
-    for (let d = 0; d <= 2; d++) {
-      for (let h = s.h; h <= e.h; h++) {
-        const date = new Date(from.getFullYear(), from.getMonth(), from.getDate() + d, h, 0, 0, 0);
-        const ts = date.getTime();
-        if (ts > from.getTime() + 1000 && ts <= limit) out.push(ts);
-      }
-    }
-  }
-  return out;
-}
-
-// 增强：浏览器支持 Notification Triggers 时预约通知，App 关闭也能提醒
-async function scheduleNotificationTriggers() {
-  if (!('Notification' in window) || Notification.permission !== 'granted' || !('serviceWorker' in navigator)) return;
-  if (typeof window.TimestampTrigger !== 'function') return;
-  try {
-    const reg = await navigator.serviceWorker.ready;
-    const now = new Date();
-    for (const rule of reminderState.rules) {
-      if (!rule.enabled) continue;
-      for (const ts of upcomingTriggerTimes(rule, now, 24)) {
-        await reg.showNotification('FitLog 训练提醒', {
-          body: rule.text || '该动一动啦！',
-          tag: `fitlog-trigger-${rule.id}-${ts}`,
-          icon: './icon-192.png',
-          showTrigger: new window.TimestampTrigger(ts)
-        });
-      }
-    }
-  } catch (_) {}
-}
-
-async function requestNotifyPermission() {
-  if (!('Notification' in window)) { showToast('当前浏览器不支持系统通知'); return false; }
-  if (Notification.permission === 'granted') return true;
-  const perm = await Notification.requestPermission();
-  const ok = perm === 'granted';
-  showToast(ok ? '通知权限已开启' : '未获权限，提醒将只在App内显示');
-  return ok;
-}
-
-function updateReminderPermLabel() {
-  const el = $('reminderPermStatus');
-  if (!el) return;
-  if (!('Notification' in window)) { el.textContent = '浏览器不支持通知'; return; }
-  el.textContent = Notification.permission === 'granted'
-    ? '系统通知已开启'
-    : (Notification.permission === 'denied' ? '通知被拒绝，请在浏览器设置中开启' : '尚未开启系统通知');
-}
-
-function renderReminders() {
-  const list = $('reminderList');
-  if (!list) return;
-  if (!reminderState.rules.length) {
-    list.innerHTML = '<p class="muted small-text">还没有提醒。例如添加“每天 07:00 提醒拉伸”，或“9:00-17:00 每小时站起来活动”。</p>';
-    return;
-  }
-  list.innerHTML = reminderState.rules.map(r => {
-    let desc = '';
-    if (r.type === 'daily') desc = `每天 ${r.time}`;
-    else if (r.type === 'once') desc = `${r.date || '单次'} ${r.time}`;
-    else if (r.type === 'hourly') desc = `${r.start} - ${r.end} 每小时`;
-    return `<div class="reminder-row">
-      <input type="checkbox" class="reminder-enabled" data-id="${r.id}" ${r.enabled ? 'checked' : ''}>
-      <div class="reminder-info"><b>${escapeHtml(r.text || '训练提醒')}</b><small>${escapeHtml(desc)}</small></div>
-      <button class="small-btn reminder-test" data-id="${r.id}">试响</button>
-      <button class="small-btn danger-text reminder-del" data-id="${r.id}">删除</button>
-    </div>`;
-  }).join('');
-}
-
-function initReminders() {
-  loadReminders();
-  renderReminders();
-  updateReminderPermLabel();
-
-  const typeSel = $('reminderType');
-  const toggleFields = () => {
-    const onceBox = $('reminderOnceFields');
-    const hourlyBox = $('reminderHourlyFields');
-    const timeBox = $('reminderTimeField');
-    if (onceBox) onceBox.classList.toggle('hidden', typeSel?.value !== 'once');
-    if (hourlyBox) hourlyBox.classList.toggle('hidden', typeSel?.value !== 'hourly');
-    if (timeBox) timeBox.classList.toggle('hidden', typeSel?.value === 'hourly');
-  };
-  if (typeSel) typeSel.addEventListener('change', toggleFields);
-  toggleFields();
-
-  // 保存表单设置为默认值（下次打开自动带入）
-  const saveBtn = $('reminderSaveBtn');
-  if (saveBtn) saveBtn.addEventListener('click', () => {
-    const draft = {
-      type: typeSel?.value || 'daily',
-      time: $('reminderTime')?.value || '07:00',
-      date: $('reminderDate')?.value || '',
-      start: $('reminderStart')?.value || '09:00',
-      end: $('reminderEnd')?.value || '17:00',
-      text: ($('reminderText')?.value || '').trim()
-    };
-    try { localStorage.setItem(REMINDER_DRAFT_KEY, JSON.stringify(draft)); } catch (_) {}
-    showToast('设置已保存');
-  });
-  restoreReminderDraft();
-
-  // 提醒弹窗：关闭并停止响铃
-  const alertOk = $('reminderAlertOk');
-  if (alertOk) alertOk.addEventListener('click', () => {
-    stopReminderRing();
-    closeDialog('reminderAlertDialog');
-  });
-
-  const addBtn = $('reminderAddBtn');
-  if (addBtn) addBtn.addEventListener('click', () => {
-    const type = typeSel?.value || 'daily';
-    const text = ($('reminderText')?.value || '').trim();
-    const rule = { id: makeId(), type, text: text || '该动一动啦，站起来活动一下！', enabled: true };
-    if (type === 'hourly') {
-      rule.start = $('reminderStart')?.value || '09:00';
-      rule.end = $('reminderEnd')?.value || '17:00';
-    } else {
-      rule.time = $('reminderTime')?.value || '07:00';
-      if (type === 'once') rule.date = $('reminderDate')?.value || '';
-    }
-    reminderState.rules.push(rule);
-    saveReminders();
-    renderReminders();
-    startReminderTicker();
-    scheduleNotificationTriggers();
-    showToast('提醒已添加');
-  });
-
-  const list = $('reminderList');
-  if (list) {
-    list.addEventListener('change', e => {
-      if (!e.target.classList.contains('reminder-enabled')) return;
-      const r = reminderState.rules.find(x => x.id === e.target.dataset.id);
-      if (!r) return;
-      r.enabled = e.target.checked;
-      saveReminders();
-      scheduleNotificationTriggers();
-      showToast(r.enabled ? '提醒已开启' : '提醒已暂停');
-    });
-    list.addEventListener('click', e => {
-      const testBtn = e.target.closest('.reminder-test');
-      const delBtn = e.target.closest('.reminder-del');
-      if (testBtn) {
-        const r = reminderState.rules.find(x => x.id === testBtn.dataset.id);
-        if (r) fireReminderNotification(r);
-      }
-      if (delBtn) {
-        reminderState.rules = reminderState.rules.filter(x => x.id !== delBtn.dataset.id);
-        saveReminders();
-        renderReminders();
-        scheduleNotificationTriggers();
-        showToast('提醒已删除');
-      }
-    });
-  }
-
-  const permBtn = $('reminderPermBtn');
-  if (permBtn) permBtn.addEventListener('click', async () => {
-    const ok = await requestNotifyPermission();
-    updateReminderPermLabel();
-    if (ok) scheduleNotificationTriggers();
-  });
-
-  startReminderTicker();
-  scheduleNotificationTriggers();
 }
 
 async function refreshCurrentPage() {
@@ -2641,25 +2243,8 @@ function bindEvents() {
     }
   });
 
-  // 执行器与数据备份事件
+  // 执行器与数据备份事件（暂停/停止已移到训练界面底部倒计时两侧）
   $('runnerCloseBtn').addEventListener('click', closeRunner);
-  const pauseBtn = $('runnerPauseBtn');
-  if (pauseBtn) pauseBtn.addEventListener('click', () => {
-    if (!runner || runner.phase === 'done') return;
-    if (runner.paused) resumeRunner();
-    else pauseRunner();
-    pauseBtn.textContent = runner.paused ? '▶' : '⏸';
-    pauseBtn.title = runner.paused ? '继续训练' : '暂停训练';
-  });
-  const endBtn = $('runnerEndBtn');
-  if (endBtn) endBtn.addEventListener('click', () => {
-    if (!runner) return;
-    const doneSets = runner.session?.exercises?.length || 0;
-    if (confirm(doneSets > 0 ? `确定结束本次训练吗？已完成的 ${doneSets} 组会保存。` : '确定结束本次训练吗？尚未完成任何组，本次不保存记录。')) {
-      clearRunnerSnapshot();
-      finishSession();
-    }
-  });
 
   // 恢复训练弹窗
   const resumeYes = $('resumeTrainingYes');
@@ -2668,10 +2253,9 @@ function bindEvents() {
     closeDialog('resumeTrainingDialog');
     if (await restoreRunnerFromSnapshot(loadRunnerSnapshot())) {
       $('runnerPlanName').textContent = runner.planName;
-      $('runnerPauseBtn').textContent = '▶';
       openDialog('runnerDialog');
       renderRunner();
-      showToast('已恢复上次训练，点 ▶ 继续');
+      showToast('已恢复上次训练，点底部 ▶ 继续');
     }
   });
   if (resumeNo) resumeNo.addEventListener('click', () => {
@@ -2780,6 +2364,11 @@ function bindEvents() {
     }
     if (target.dataset.startPlan) startPlan(target.dataset.startPlan);
     if (target.dataset.sessionDetail) showSessionDetail(target.dataset.sessionDetail);
+    if (target.dataset.sessionDelete && confirm('确定删除这条训练记录吗？删除后无法恢复。')) {
+      await remove('sessions', target.dataset.sessionDelete);
+      await refreshCurrentPage();
+      showToast('训练记录已删除');
+    }
   });
 
   window.addEventListener('beforeinstallprompt', event => {
@@ -2803,8 +2392,6 @@ async function init() {
   loadVoiceSettings();
   initAudioUnlock();
   initPullRefresh();
-  initCacheManager();
-  initReminders();
   bindEvents();
 
   // 系统声音列表通常是异步加载的，多次尝试填充音色下拉
@@ -2823,7 +2410,6 @@ async function init() {
     await renderHome();
     restoreSavedPage();
     $('storageStatus').textContent = '本地数据库已连接。';
-    await scanCacheSizes();
 
     // 若存在未完成的训练快照，询问是否继续
     const snap = loadRunnerSnapshot();
