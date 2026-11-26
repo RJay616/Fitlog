@@ -14,7 +14,7 @@
   <header class="topbar">
     <div class="brand"><div class="brand-mark">F</div><div><strong>FitLog</strong><small>我的私人运动教练</small></div></div>
     <div class="topbar-actions">
-      <span class="version-badge" id="appVersion">v1.4</span>
+      <span class="version-badge" id="appVersion">v1.5</span>
       <button id="installBtn" class="install-btn hidden" type="button">安装</button>
     </div>
   </header>
@@ -37,9 +37,10 @@
       <div class="quick-grid">
         <button class="quick-card" data-go="exercises"><span class="quick-icon">▤</span><b>动作库</b><small>视频、要领与节拍</small></button>
         <button class="quick-card" data-go="plans"><span class="quick-icon">▦</span><b>训练课程</b><small>组合或自定义动作</small></button>
+        <button class="quick-card" data-go="data" data-focus="reminderCard"><span class="quick-icon">⏰</span><b>训练提醒</b><small>定时站起来活动</small></button>
         <button class="quick-card" data-go="history"><span class="quick-icon">◷</span><b>训练历史</b><small>回顾每次训练</small></button>
-        <button class="quick-card" data-go="data"><span class="quick-icon">⇧</span><b>数据备份</b><small>导出或恢复数据</small></button>
         <button class="quick-card" data-go="data"><span class="quick-icon">♻</span><b>缓存清理</b><small>分级清理缓存</small></button>
+        <button class="quick-card" data-go="data"><span class="quick-icon">⇧</span><b>数据备份</b><small>导出或恢复数据</small></button>
       </div>
       <div class="section-heading"><h2>最近训练</h2><button class="text-btn" data-go="history">全部记录</button></div>
       <div id="recentSessions" class="list-card empty-state">还没有训练记录，完成第一次训练后会显示在这里。</div>
@@ -115,9 +116,9 @@
         <label class="cache-row"><input type="checkbox" id="chkCacheUseless"><span><b>无用缓存</b>：旧版本残留缓存（可安全清理）<em id="sizeUseless">计算中...</em></span></label>
         <div class="cache-actions"><button id="btnScanCache" class="small-btn">重新扫描</button><button id="btnCleanCache" class="small-btn danger-text">清理所选缓存</button></div>
       </div>
-      <div class="info-card">
+      <div class="info-card" id="reminderCard">
         <b>训练提醒</b>
-        <p>支持三种提醒：<strong>每天固定时间</strong>（如早起 7:00 练拉伸）、<strong>单次提醒</strong>、<strong>每小时提醒</strong>（如 9:00-17:00 每小时站起来活动）。需允许系统通知，App 开着或后台时更可靠。</p>
+        <p>支持三种提醒：<strong>每天固定时间</strong>（如早起 7:00 练拉伸）、<strong>单次提醒</strong>、<strong>每小时提醒</strong>（如 9:00-17:00 每小时站起来活动）。到点会弹窗 + 响铃提醒；允许系统通知可在后台也收到。</p>
         <p class="small-text">通知状态：<span id="reminderPermStatus">检查中…</span> <button id="reminderPermBtn" class="small-btn" type="button">开启系统通知</button></p>
         <div class="voice-settings reminder-form">
           <label>提醒类型
@@ -140,7 +141,7 @@
             <input id="reminderText" type="text" placeholder="例如：起床啦，练套拉伸！">
           </label>
         </div>
-        <div class="cache-actions"><button id="reminderAddBtn" class="small-btn" type="button">添加提醒</button></div>
+        <div class="cache-actions"><button id="reminderSaveBtn" class="small-btn" type="button">保存设置</button><button id="reminderAddBtn" class="small-btn" type="button">添加提醒</button></div>
         <div id="reminderList" class="reminder-list"></div>
       </div>
       <div class="info-card">
@@ -169,7 +170,7 @@
       </div>
       <div class="info-card">
         <b>版本信息</b>
-        <p>FitLog <span id="appVersionData">v1.4</span> · PWA · IndexedDB 本地存储（小版本 1.1、1.2…，大改版从 2.1 起）</p>
+        <p>FitLog <span id="appVersionData">v1.5</span> · PWA · IndexedDB 本地存储（小版本 1.1、1.2…，大改版从 2.1 起）</p>
         <p id="storageStatus">正在检查本地数据库……</p>
       </div>
     </section>
@@ -210,6 +211,10 @@
             <option value="time">时间型</option>
             <option value="side">左右侧型</option>
           </select>
+        </label>
+        <label class="inline-label side-split-toggle">
+          <span>左右两侧分步（先左侧→休息20秒→再右侧→本组结束）</span>
+          <input id="exerciseLeftRight" type="checkbox">
         </label>
       </div>
 
@@ -341,6 +346,15 @@
     <div class="dialog-actions">
       <button type="button" class="primary-btn" data-close="detailDialog">完成</button>
     </div>
+  </dialog>
+
+  <!-- 提醒弹窗（到点时强制弹出 + 响铃） -->
+  <dialog id="reminderAlertDialog" class="reminder-alert-dialog">
+    <div class="ra-icon">⏰</div>
+    <div class="ra-title">该动一动啦！</div>
+    <div class="ra-text" id="reminderAlertText">站起来活动一下吧</div>
+    <div class="ra-time" id="reminderAlertTime"></div>
+    <button type="button" class="primary-btn" id="reminderAlertOk">知道了</button>
   </dialog>
 
   <!-- 训练执行弹窗 -->

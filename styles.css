@@ -101,9 +101,12 @@ main{max-width:760px;margin:0 auto;padding:18px 16px 28px}
 
 /* 呼吸节拍阶段列表 */
 .tempo-phase-list{display:grid;gap:6px}
-.tempo-phase-row{display:grid;grid-template-columns:1.5fr 68px auto auto;gap:5px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:10px;padding:6px}
-.tempo-phase-row input[type="text"]{padding:7px 8px;font-size:12px}
-.tempo-phase-row input[type="number"]{padding:7px 6px;font-size:12px;text-align:center}
+.tempo-phase-row{display:grid;grid-template-columns:1.5fr 34px 60px auto auto;gap:5px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:10px;padding:6px}
+.tempo-phase-row input[type="text"]{padding:7px 8px;font-size:12px;min-width:0}
+.tempo-phase-row input[type="number"]{padding:7px 6px;font-size:12px;text-align:center;min-width:0}
+.tp-color-wrap{display:flex;align-items:center;justify-content:center;height:30px;border:1px solid var(--line);border-radius:8px;background:#fbfcfe;cursor:pointer}
+.tp-color{width:24px;height:24px;border:0;background:none;padding:0;cursor:pointer}
+.side-split-toggle{margin-top:8px;font-size:12px!important}
 .tempo-count-toggle{display:flex!important;align-items:center;gap:3px;font-size:10px!important;font-weight:600!important;white-space:nowrap;color:var(--muted)!important}
 .tempo-count-toggle input{width:auto!important;margin:0}
 .tempo-del-btn{border:0;background:#fee2e2;color:var(--red);border-radius:8px;width:26px;height:26px;font-size:14px}
@@ -156,15 +159,23 @@ main{max-width:760px;margin:0 auto;padding:18px 16px 28px}
 .file-label input{position:absolute;inset:0;opacity:0;width:100%;cursor:pointer}
 
 /* 训练执行器 */
-.runner-dialog{border:0;border-radius:24px 24px 0 0;padding:0;position:fixed;inset:auto 0 0;width:100%;max-width:760px;margin:0 auto;background:#f5f7fb;max-height:94vh;overflow:auto}
-.runner-top{background:var(--navy);color:#fff;padding:16px 20px;display:flex;justify-content:space-between;align-items:center;font-weight:800}
+.runner-dialog{border:0;border-radius:0;padding:0;position:fixed;inset:0;width:100%;max-width:none;margin:0;background:#f5f7fb;max-height:100vh;height:100dvh;overflow:auto}
+.runner-top{background:var(--navy);color:#fff;padding:16px 20px;display:flex;justify-content:space-between;align-items:center;font-weight:800;position:sticky;top:0;z-index:2}
 .icon-btn.light{background:#35506b;color:#fff}
 .runner-progress{height:4px;background:#dce4ee}
 .runner-progress div{height:4px;background:#3475ed;width:0;transition:width .2s}
-.runner-body{padding:20px 18px 34px;text-align:center}
+.runner-body{padding:20px 18px 40px;text-align:center;min-height:calc(100dvh - 60px);display:flex;flex-direction:column;align-items:center;justify-content:center}
 .runner-kicker{font-size:11px;color:var(--muted);letter-spacing:1px}
-.runner-body h2{font-size:24px;margin:6px 0}
-.runner-cue{font-size:12px;line-height:1.65;color:#475569;background:#fff;border:1px solid var(--line);border-radius:12px;padding:9px 12px;max-width:440px;margin:0 auto 14px}
+.runner-body h2{font-size:24px;margin:6px 0;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
+.runner-cue{font-size:22px;line-height:1.5;color:#334155;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 16px;max-width:560px;margin:8px auto 16px;font-weight:700}
+.side-badge{font-size:13px;color:#fff;background:#0f766e;border-radius:999px;padding:3px 12px;font-weight:800;letter-spacing:1px}
+
+/* 工作阶段：屏幕中央圆形阶段提示 */
+.phase-circle{width:min(70vw,300px);height:min(70vw,300px);border-radius:50%;margin:14px auto 12px;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 12px 34px #0f172a33;color:#fff;flex:0 0 auto}
+.phase-circle-label{font-size:clamp(30px,8vw,52px);font-weight:850;line-height:1.2;color:#fff;padding:0 18px;word-break:break-word;text-shadow:0 2px 6px #00000033}
+.phase-circle-count{font-size:clamp(26px,7vw,42px);font-weight:800;color:#fff;margin-top:8px;font-variant-numeric:tabular-nums;opacity:.95}
+.reps-progress{font-size:16px;color:#475569;margin:2px 0 6px}
+.reps-progress b{color:var(--blue);font-size:20px}
 .runner-video{width:100%;max-width:360px;max-height:175px;border-radius:14px;background:#0f172a;margin:0 auto 12px;display:block}
 .tempo-banner{background:linear-gradient(135deg,#1e3a8a,#2563eb);color:#fff;border-radius:18px;padding:14px 16px;max-width:400px;margin:10px auto 14px;box-shadow:0 8px 20px #2563eb26}
 .tempo-banner.rest-mode{background:linear-gradient(135deg,#0f766e,#14b8a6)}
@@ -223,6 +234,15 @@ main{max-width:760px;margin:0 auto;padding:18px 16px 28px}
 .reminder-info b{font-size:12px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .reminder-info small{font-size:11px;color:var(--muted)}
 .reminder-row .small-btn{flex:0 0 auto}
+
+/* 提醒弹窗（醒目强制提醒） */
+.reminder-alert-dialog{border:0;border-radius:24px;padding:30px 24px;width:min(90vw,420px);text-align:center;box-shadow:0 24px 80px #0f172a66}
+.reminder-alert-dialog::backdrop{background:#0f172a99}
+.reminder-alert-dialog .ra-icon{font-size:64px;line-height:1;margin-bottom:10px}
+.reminder-alert-dialog .ra-title{font-size:26px;font-weight:850;color:#dc2626;margin-bottom:10px}
+.reminder-alert-dialog .ra-text{font-size:20px;font-weight:700;color:var(--ink);line-height:1.5;margin-bottom:8px}
+.reminder-alert-dialog .ra-time{font-size:14px;color:var(--muted);margin-bottom:22px}
+.reminder-alert-dialog .primary-btn{width:100%;font-size:16px;padding:14px}
 
 /* 缓存分级清理 */
 .cache-row{display:flex!important;align-items:flex-start;gap:9px;padding:9px 0;border-bottom:1px solid var(--line);font-weight:500!important;color:var(--ink)!important}

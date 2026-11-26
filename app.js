@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.4';
+const APP_VERSION = '1.5';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -9,24 +9,26 @@ const DB_VERSION = 2;
 const STORES = ['exercises', 'plans', 'sessions', 'meta'];
 const DEFAULT_CATEGORIES = ['臀腿', '腰腹', '胸', '背', '肩', '手臂', '核心', '臀部', '腿部', '全身', '其他'];
 
+// 阶段默认配色：呼气红 / 保持停顿黄 / 吸气绿（均可在编辑器里自定义）
+const PHASE_COLOR = { exhale: '#ef4444', hold: '#f59e0b', inhale: '#22c55e', other: '#3b82f6' };
 const TEMPO_PRESETS = {
   pushup: [
-    { label: '吸气 · 缓慢向下', seconds: 3, countOut: true, voice: '吸气，缓慢向下' },
-    { label: '呼气 · 用力上撑', seconds: 1, countOut: false, voice: '呼气，用力上撑' }
+    { label: '吸气 · 缓慢向下', seconds: 3, countOut: true, voice: '吸气，缓慢向下', color: PHASE_COLOR.inhale },
+    { label: '呼气 · 用力上撑', seconds: 1, countOut: false, voice: '呼气，用力上撑', color: PHASE_COLOR.exhale }
   ],
   kegel: [
-    { label: '呼气 · 盆底肌收缩', seconds: 3, countOut: true, voice: '呼气，收缩' },
-    { label: '吸气 · 彻底放松', seconds: 10, countOut: true, voice: '吸气，放松' }
+    { label: '呼气 · 盆底肌收缩', seconds: 3, countOut: true, voice: '呼气，收缩', color: PHASE_COLOR.exhale },
+    { label: '吸气 · 彻底放松', seconds: 10, countOut: true, voice: '吸气，放松', color: PHASE_COLOR.inhale }
   ],
   kickback: [
-    { label: '呼气 · 向后踢出', seconds: 1, countOut: false, voice: '呼气，后踢' },
-    { label: '顶峰 · 保持收缩', seconds: 2, countOut: true, voice: '保持' },
-    { label: '吸气 · 缓慢回收', seconds: 3, countOut: true, voice: '吸气，缓慢回收' }
+    { label: '呼气 · 向后踢出', seconds: 1, countOut: false, voice: '呼气，后踢', color: PHASE_COLOR.exhale },
+    { label: '顶峰 · 保持收缩', seconds: 2, countOut: true, voice: '保持', color: PHASE_COLOR.hold },
+    { label: '吸气 · 缓慢回收', seconds: 3, countOut: true, voice: '吸气，缓慢回收', color: PHASE_COLOR.inhale }
   ],
   squat: [
-    { label: '吸气 · 屈髋下蹲', seconds: 3, countOut: true, voice: '吸气，下蹲' },
-    { label: '底部 · 稳定停顿', seconds: 1, countOut: false, voice: '保持稳定' },
-    { label: '呼气 · 发力站起', seconds: 1, countOut: false, voice: '呼气，站起' }
+    { label: '吸气 · 屈髋下蹲', seconds: 3, countOut: true, voice: '吸气，下蹲', color: PHASE_COLOR.inhale },
+    { label: '底部 · 稳定停顿', seconds: 1, countOut: false, voice: '保持稳定', color: PHASE_COLOR.hold },
+    { label: '呼气 · 发力站起', seconds: 1, countOut: false, voice: '呼气，站起', color: PHASE_COLOR.exhale }
   ]
 };
 
@@ -67,8 +69,9 @@ let voicesLoaded = false;
 
 // 训练提醒（持久化）
 const REMINDERS_KEY = 'fitlog-reminders';
+const REMINDER_DRAFT_KEY = 'fitlog-reminder-draft';
 // rules: [{ id, type:'once'|'daily'|'hourly', time:'HH:MM', start:'HH:MM', end:'HH:MM', text, enabled }]
-const reminderState = { rules: [], tickTimer: null };
+const reminderState = { rules: [], tickTimer: null, visBound: false };
 
 const $ = id => document.getElementById(id);
 const makeId = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -524,7 +527,14 @@ function navigate(page, options = {}) {
     scanCacheSizes();
   }
   if (persist) localStorage.setItem(PAGE_STORAGE_KEY, page);
-  if (scroll) window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (options.focus) {
+    setTimeout(() => {
+      const el = $(options.focus);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+  } else if (scroll) {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
 }
 
 function restoreSavedPage() {
@@ -644,6 +654,7 @@ async function renderExercises() {
               <span class="tag">${escapeHtml(e.muscle)}</span>
               <span class="tag">${typeLabel(e.type)}</span>
               ${e.pureVideo ? `<span class="tag amber">纯视频跟练</span>` : ''}
+              ${(e.leftRight || e.type === 'side') ? `<span class="tag amber">左右分步</span>` : ''}
               ${hasTempo ? `<span class="tag green">节拍引导(${e.tempoPhases.length}段)</span>` : ''}
               ${hasVideo ? `<span class="tag amber">含视频</span>` : ''}
             </div>
@@ -687,7 +698,7 @@ function setVideoPreviewSrc(src) {
 function applyPureVideoMode() {
   const isPure = Boolean($('exercisePureVideo')?.checked);
   const ids = [
-    'exerciseType', 'exDefaultSets', 'exDefaultTarget', 'exDefaultWeight',
+    'exerciseType', 'exerciseLeftRight', 'exDefaultSets', 'exDefaultTarget', 'exDefaultWeight',
     'exDefaultRest', 'exPrepSeconds', 'tempoPresetSelect', 'addTempoPhaseBtn',
     'exerciseNotes', 'exerciseCue'
   ];
@@ -711,6 +722,9 @@ function renderTempoPhaseEditor(phases = []) {
   list.innerHTML = phases.map((p, idx) => `
     <div class="tempo-phase-row" data-phase-idx="${idx}">
       <input type="text" class="tp-label" value="${escapeHtml(p.label || '')}" placeholder="如：吸气-向下">
+      <label class="tp-color-wrap" title="自定义该阶段显示颜色">
+        <input type="color" class="tp-color" value="${/^#[0-9a-f]{6}$/i.test(p.color || '') ? p.color : PHASE_COLOR.other}">
+      </label>
       <input type="number" class="tp-sec" min="1" max="120" value="${clampInt(p.seconds, 1, 120, 3)}" title="持续秒数">
       <label class="tempo-count-toggle" title="保留阶段标记（不影响报数，训练时每秒滴答、每完成一次报数）">
         <input type="checkbox" class="tp-count" ${p.countOut ? 'checked' : ''}>阶段
@@ -726,7 +740,9 @@ function collectTempoPhasesFromEditor() {
     const label = row.querySelector('.tp-label')?.value.trim() || '节拍阶段';
     const seconds = clampInt(row.querySelector('.tp-sec')?.value, 1, 120, 3);
     const countOut = Boolean(row.querySelector('.tp-count')?.checked);
-    return { label, seconds, countOut, voice: label };
+    const rawColor = row.querySelector('.tp-color')?.value || '';
+    const color = /^#[0-9a-f]{6}$/i.test(rawColor) ? rawColor : PHASE_COLOR.other;
+    return { label, seconds, countOut, color, voice: label };
   });
 }
 
@@ -737,6 +753,7 @@ async function openExerciseEditor(exercise = null) {
   $('exerciseName').value = exercise?.name || '';
   $('exerciseMuscle').value = exercise?.muscle || $('exerciseMuscle').value;
   $('exerciseType').value = exercise?.type || 'reps';
+  $('exerciseLeftRight').checked = Boolean(exercise?.leftRight);
   $('exDefaultSets').value = exercise?.defaultTarget?.sets ?? 3;
   $('exDefaultTarget').value = exercise?.defaultTarget?.target ?? (exercise?.type === 'time' ? 30 : 12);
   $('exDefaultWeight').value = exercise?.defaultTarget?.weight ?? 0;
@@ -777,6 +794,7 @@ async function saveExercise(event) {
     name,
     muscle,
     type,
+    leftRight: Boolean($('exerciseLeftRight')?.checked),
     notes: $('exerciseNotes').value.trim(),
     cue: $('exerciseCue').value.trim(),
     prepSeconds: clampInt($('exPrepSeconds').value, 0, 30, 5),
@@ -1148,12 +1166,19 @@ function currentRunnerItem() {
   return runner?.items[runner.index];
 }
 
+// 左右两侧分步：左做完→切换休息→右做完→本组结束
+function isSplitSide(exercise) {
+  return Boolean(exercise?.leftRight) || exercise?.type === 'side';
+}
+const SIDE_SWITCH_SECONDS = 20;
+
 function setupRunnerPhase(isFirstStart = false) {
   stopRunnerTimer();
   if (!runner) return;
   const item = currentRunnerItem();
   const exercise = item.exercise;
   const hasTempo = Array.isArray(exercise.tempoPhases) && exercise.tempoPhases.length > 0;
+  const split = isSplitSide(exercise);
 
   // 纯视频跟练：不计时、不计数、不休息，视频播完自动下一项
   if (exercise.pureVideo) {
@@ -1181,6 +1206,10 @@ function setupRunnerPhase(isFirstStart = false) {
     const prepSec = clampInt(exercise.prepSeconds, 0, 30, 5);
     runner.remaining = prepSec;
     runner.completedRepsInSet = 0;
+    runner.leftDone = null;
+    runner.rightDone = null;
+    if (split) { runner.sideStage = 'left'; runner.enterSideRight = false; }
+    else runner.sideStage = null;
     const prefix = isFirstStart
       ? `开始训练，${runner.planName}。第一个动作，${exercise.name}。`
       : `准备动作，${exercise.name}，第${runner.setIndex}组。`;
@@ -1191,18 +1220,36 @@ function setupRunnerPhase(isFirstStart = false) {
     runner.tempoIndex = 0;
     runner.completedRepsInSet = 0;
     runner.elapsedSec = 0;
+    if (split) {
+      if (runner.enterSideRight) {
+        runner.sideStage = 'right';
+        runner.enterSideRight = false;
+      } else {
+        runner.sideStage = 'left';
+        runner.leftDone = null;
+        runner.rightDone = null;
+      }
+    } else {
+      runner.sideStage = null;
+    }
     renderRunner();
+    const sideName = split ? (runner.sideStage === 'left' ? '左侧' : '右侧') : '';
     if (hasTempo) {
+      if (split) speak(`${sideName}，${exercise.name}，第${runner.setIndex}组。`, true, 'key');
       startTempoPhase(0);
     } else {
-      // 无节拍动作（如平板支撑）：每秒滴一声，帮用户掌握节奏，不用语音描述
-      speak(`开始第${runner.setIndex}组，${exercise.name}。`, true, 'key');
+      speak(`开始第${runner.setIndex}组，${sideName}${exercise.name}。`, true, 'key');
       startPlainTickLoop();
     }
   } else if (runner.phase === 'rest') {
-    runner.remaining = clampInt(item.restSeconds, 0, 600, 30);
+    const isSwitch = runner.restKind === 'switch';
+    runner.remaining = isSwitch ? SIDE_SWITCH_SECONDS : clampInt(item.restSeconds, 0, 600, 30);
     playRestStartCue();
-    speak(`本组完成，休息${runner.remaining}秒。`, true, 'key');
+    if (isSwitch) {
+      speak(`左侧完成，休息${SIDE_SWITCH_SECONDS}秒，调整到右侧后继续。`, true, 'key');
+    } else {
+      speak(`本组完成，休息${runner.remaining}秒。`, true, 'key');
+    }
     renderRunner();
     startCountdownLoop('rest');
   } else if (runner.phase === 'done') {
@@ -1211,12 +1258,13 @@ function setupRunnerPhase(isFirstStart = false) {
   }
 }
 
-// 简洁节拍：每秒滴一声掌握节奏，每完成一个动作报一次数（1、2、3…）
-// 不再播报“吸气下蹲 / 呼气站起”等描述，避免语音嘈杂断续
+// 简洁节拍：每秒滴一声掌握节奏；一次动作开始前只报纯数字（1、2、3…）
+// 达到目标次数后自动进入休息 → 自动下一组 / 下一动作；左右侧动作按左→切换→右分步
 function startTempoPhase(phaseIdx) {
   stopRunnerTimer();
   if (!runner || runner.phase !== 'work') return;
-  const exercise = currentRunnerItem().exercise;
+  const item = currentRunnerItem();
+  const exercise = item.exercise;
   const phases = exercise.tempoPhases || [];
   if (!phases.length) return;
 
@@ -1224,9 +1272,9 @@ function startTempoPhase(phaseIdx) {
   const p = phases[runner.tempoIndex];
   runner.tempoSecLeft = clampInt(p.seconds, 1, 120, 3);
 
-  // 一次动作开始前：先报“第几个”，随后每秒一声滴滴
+  // 一次动作开始前：只报数字，不说“第几个”
   if (phaseIdx === 0) {
-    speak(`第${runner.completedRepsInSet + 1}个`, true, 'count');
+    speak(String(runner.completedRepsInSet + 1), true, 'count');
   }
 
   renderRunner();
@@ -1247,19 +1295,46 @@ function startTempoPhase(phaseIdx) {
     if (nextIdx < phases.length) {
       startTempoPhase(nextIdx);
     } else {
-      // 一轮节拍走完 = 完成一个动作（此处不再报数，报数已提前到动作开始前）
+      // 一轮节拍走完 = 完成一次
       runner.completedRepsInSet += 1;
-      const targetReps = currentRunnerItem().target;
-      const inputEl = $('actualValue');
-      if (inputEl && exercise.type !== 'side') inputEl.value = runner.completedRepsInSet;
+      const repsDoneEl = $('repsDone');
+      if (repsDoneEl) repsDoneEl.textContent = runner.completedRepsInSet;
+      const targetReps = item.target || exercise.defaultTarget?.target;
       if (targetReps && runner.completedRepsInSet >= targetReps) {
         stopRunnerTimer();
-        speak(`已完成${targetReps}次，本组结束。`, true, 'key');
+        onSideOrSetComplete();
       } else {
         startTempoPhase(0);
       }
     }
   }, 1000);
+}
+
+// 一次目标达成后：左右侧分步先切到另一侧，否则自动结算本组并进入休息
+function onSideOrSetComplete() {
+  if (!runner) return;
+  const item = currentRunnerItem();
+  const exercise = item.exercise;
+  speak(String(runner.completedRepsInSet), true, 'count');
+
+  if (isSplitSide(exercise)) {
+    if (runner.sideStage === 'left') {
+      runner.leftDone = runner.completedRepsInSet;
+      beginSideSwitch();
+      return;
+    }
+    runner.rightDone = runner.completedRepsInSet;
+  }
+  autoCompleteSet();
+}
+
+// 左侧完成 → 20 秒切换休息 → 右侧
+function beginSideSwitch() {
+  stopRunnerTimer();
+  runner.restKind = 'switch';
+  runner.pendingAdvance = { index: runner.index, setIndex: runner.setIndex, sideSwitch: true };
+  runner.phase = 'rest';
+  setupRunnerPhase(false);
 }
 
 // 无节拍动作（如平板支撑）：每秒滴一声，显示已坚持秒数，不说话
@@ -1301,6 +1376,17 @@ function startCountdownLoop(mode) {
         setupRunnerPhase(false);
       } else if (mode === 'rest') {
         playRestEndCue();
+        if (runner.pendingAdvance?.sideSwitch) {
+          const target = runner.pendingAdvance;
+          runner.pendingAdvance = null;
+          runner.restKind = null;
+          runner.enterSideRight = true;
+          runner.index = target.index;
+          runner.setIndex = target.setIndex;
+          runner.phase = 'work';
+          setupRunnerPhase(false);
+          return;
+        }
         applyPendingAdvance();
       }
     }
@@ -1335,17 +1421,35 @@ function renderRunner() {
 
   const hasTempo = Array.isArray(exercise.tempoPhases) && exercise.tempoPhases.length > 0;
   const currentPhase = hasTempo ? exercise.tempoPhases[runner.tempoIndex] : null;
+  const split = isSplitSide(exercise);
+  const sideBadge = split
+    ? `<span class="side-badge">${runner.sideStage === 'right' ? '右侧' : '左侧'}</span>`
+    : '';
+
+  // 工作阶段（有节拍）：屏幕中央圆形，背景=阶段自定义颜色，文字白色；描述字号约为数字两倍
+  let centerHtml = '';
+  if (runner.phase === 'work' && currentPhase) {
+    const color = /^#[0-9a-f]{6}$/i.test(currentPhase.color || '') ? currentPhase.color : PHASE_COLOR.other;
+    const descText = currentPhase.label || '跟练';
+    centerHtml = `
+      <div class="phase-circle" style="background:${color}">
+        <div class="phase-circle-label">${escapeHtml(descText)}</div>
+        <div class="phase-circle-count" id="runnerNumber">${Math.max(0, runner.tempoSecLeft)}</div>
+      </div>
+      <div class="reps-progress">已完成 <b id="repsDone">${runner.completedRepsInSet}</b> / ${item.target || exercise.defaultTarget?.target || '—'} 次${split ? ` · ${runner.sideStage === 'right' ? '右侧' : '左侧'}` : ''}</div>
+    `;
+  }
 
   let bannerHtml = '';
   if (runner.phase === 'prepare') {
-    bannerHtml = `<div class="tempo-banner prep-mode"><div class="tempo-phase-title">调整初始姿势（准备缓冲）</div><div class="tempo-phase-sub">先摆好姿势，倒计时结束后开始做动作</div></div>`;
-  } else if (runner.phase === 'work' && currentPhase) {
-    bannerHtml = `<div class="tempo-banner"><div class="tempo-phase-title">${escapeHtml(currentPhase.label)}</div><div class="tempo-phase-sub" id="tempoStatusSub">本组节拍已完成：${runner.completedRepsInSet} / 目标 ${item.target}</div></div>`;
+    bannerHtml = `<div class="tempo-banner prep-mode"><div class="tempo-phase-title">调整初始姿势（准备缓冲）</div><div class="tempo-phase-sub">先摆好姿势，倒计时结束后自动开始</div></div>`;
   } else if (runner.phase === 'rest') {
+    const isSwitch = runner.restKind === 'switch';
     const nextName = runner.pendingAdvance
       ? (runner.items[runner.pendingAdvance.index]?.exercise.name || '下一动作')
       : '下一组';
-    bannerHtml = `<div class="tempo-banner rest-mode"><div class="tempo-phase-title">组间休息 · 下一项：${escapeHtml(nextName)}</div><div class="tempo-phase-sub">放松呼吸，倒计时结束自动继续</div></div>`;
+    const title = isSwitch ? '切换休息 · 准备做右侧' : `组间休息 · 下一项：${nextName}`;
+    bannerHtml = `<div class="tempo-banner rest-mode"><div class="tempo-phase-title">${escapeHtml(title)}</div><div class="tempo-phase-sub">放松呼吸，倒计时结束自动继续</div></div>`;
   } else if (runner.phase === 'video') {
     bannerHtml = `<div class="tempo-banner"><div class="tempo-phase-title">纯视频跟练</div><div class="tempo-phase-sub">跟随视频完成动作，结束后自动进入下一项</div></div>`;
   }
@@ -1356,44 +1460,47 @@ function renderRunner() {
       ? '▶'
       : (runner.phase === 'prepare' || runner.phase === 'rest')
       ? runner.remaining
-      : hasTempo
-        ? runner.tempoSecLeft
-        : '开始';
+      : '开始';
 
-  const defaultVal = (hasTempo && runner.completedRepsInSet > 0) ? runner.completedRepsInSet : item.target;
+  const defaultVal = item.target || exercise.defaultTarget?.target || 12;
+
+  // 工作阶段：有节拍自动结算（无需手动输入）；无节拍才显示输入框和“完成本组”
+  let workControlsHtml = '';
+  if (runner.phase === 'work' && !hasTempo) {
+    workControlsHtml = `
+      <div class="runner-inputs">${
+        split
+          ? `<label>左侧次数<input id="actualLeft" type="number" min="0" max="9999" value="${defaultVal}" inputmode="numeric"></label><label>右侧次数<input id="actualRight" type="number" min="0" max="9999" value="${defaultVal}" inputmode="numeric"></label>`
+          : `<label>${exercise.type === 'time' ? '完成时长（秒）' : '完成次数'}<input id="actualValue" type="number" min="0" max="9999" value="${defaultVal}" inputmode="numeric"></label><label>重量（kg）<input id="actualWeight" type="number" min="0" max="9999" step="0.5" value="${exercise.defaultTarget?.weight ?? 0}" inputmode="decimal"></label>`
+      }</div>
+      <div class="runner-controls"><button class="main" id="completeSetBtn">完成本组</button></div>
+    `;
+  }
 
   $('runnerBody').innerHTML = `
     <div class="runner-kicker">动作 ${runner.index + 1} / ${runner.items.length} · ${isPureVideo ? '纯视频跟练（暂不统计）' : `第 ${runner.setIndex} / ${item.sets} 组（目标 ${item.target}${exercise.type === 'time' ? '秒' : '次'}）`}</div>
-    <h2>${escapeHtml(exercise.name)}</h2>
+    <h2>${sideBadge}${escapeHtml(exercise.name)}</h2>
     ${exercise.cue ? `<p class="runner-cue">💡 ${escapeHtml(exercise.cue)}</p>` : ''}
     ${videoHtml}
     ${bannerHtml}
-    <div class="runner-label">${
+    ${centerHtml}
+    ${(!centerHtml) ? `<div class="runner-label">${
       runner.phase === 'prepare' ? '起势准备倒计时'
         : runner.phase === 'rest' ? '休息剩余秒数'
           : runner.phase === 'video' ? '跟随视频完成本次练习'
             : runner.phase === 'done' ? '本次训练已全部完成'
-              : hasTempo ? '当前节拍倒计时' : '完成本组后记录实际数据'
-    }</div>
-    <div class="runner-number" id="runnerNumber">${numberDisplay}</div>
+              : '完成本组后记录实际数据'
+    }</div><div class="runner-number" id="runnerNumber">${numberDisplay}</div>` : ''}
+    ${workControlsHtml}
     ${runner.phase === 'prepare'
       ? `<div class="runner-controls"><button class="alt" id="skipPrepareBtn">立即开始</button></div>`
-      : runner.phase === 'work'
-        ? `<div class="runner-inputs">${
-            exercise.type === 'side'
-              ? `<label>左侧次数<input id="actualLeft" type="number" min="0" max="9999" value="${defaultVal}" inputmode="numeric"></label><label>右侧次数<input id="actualRight" type="number" min="0" max="9999" value="${defaultVal}" inputmode="numeric"></label>`
-              : `<label>${exercise.type === 'time' ? '完成时长（秒）' : '完成次数'}<input id="actualValue" type="number" min="0" max="9999" value="${defaultVal}" inputmode="numeric"></label><label>重量（kg）<input id="actualWeight" type="number" min="0" max="9999" step="0.5" value="${exercise.defaultTarget?.weight ?? 0}" inputmode="decimal"></label>`
-          }</div>
-          <div class="runner-controls">
-            <button class="alt" id="runnerCueBtn">重播提示</button>
-            ${hasTempo ? `<button class="alt" id="restartTempoBtn">重计节拍</button>` : ''}
-            <button class="main" id="completeSetBtn">完成本组</button>
-          </div>`
-        : runner.phase === 'video'
-          ? `<div class="runner-controls"><button class="alt" id="replayVideoBtn">重播视频</button><button class="main" id="nextVideoBtn">下一个动作</button></div>`
-          : runner.phase === 'rest'
-            ? `<div class="runner-controls"><button class="alt" id="skipRestBtn">跳过休息</button><button class="main" id="pauseRestBtn">暂停计时</button></div>`
-            : `<div class="runner-controls"><button class="main" id="finishSessionBtn">保存并结束</button></div>`
+      : runner.phase === 'video'
+        ? `<div class="runner-controls"><button class="alt" id="replayVideoBtn">重播视频</button><button class="main" id="nextVideoBtn">下一个动作</button></div>`
+        : runner.phase === 'rest'
+          ? `<div class="runner-controls"><button class="alt" id="skipRestBtn">跳过休息</button><button class="main" id="pauseRestBtn">暂停计时</button></div>`
+          : runner.phase === 'done'
+            ? `<div class="runner-controls"><button class="main" id="finishSessionBtn">保存并结束</button></div>`
+            : `<div class="runner-controls"><button class="alt" id="runnerCueBtn">重播提示</button></div>`
     }
   `;
 
@@ -1403,14 +1510,8 @@ function renderRunner() {
       setupRunnerPhase(false);
     };
   } else if (runner.phase === 'work') {
-    $('runnerCueBtn').onclick = () => speak(exercise.cue || exercise.notes || exercise.name, true, 'key');
-    if ($('restartTempoBtn')) {
-      $('restartTempoBtn').onclick = () => {
-        runner.completedRepsInSet = 0;
-        startTempoPhase(0);
-      };
-    }
-    $('completeSetBtn').onclick = completeSet;
+    if ($('runnerCueBtn')) $('runnerCueBtn').onclick = () => speak(exercise.cue || exercise.notes || exercise.name, true, 'key');
+    if ($('completeSetBtn')) $('completeSetBtn').onclick = completeSet;
   } else if (runner.phase === 'video') {
     $('nextVideoBtn').onclick = () => advanceRunner();
     $('replayVideoBtn').onclick = () => {
@@ -1436,15 +1537,42 @@ function renderRunner() {
   }
 }
 
+// 自动结算本组：用节拍累计的次数作为实际次数，无需手动输入
+function autoCompleteSet() {
+  if (!runner) return;
+  const item = currentRunnerItem();
+  const exercise = item.exercise;
+  const split = isSplitSide(exercise);
+  const target = item.target || exercise.defaultTarget?.target || runner.completedRepsInSet;
+
+  const left = split ? (runner.leftDone ?? target) : null;
+  const right = split ? (runner.rightDone ?? target) : null;
+  const actual = split ? null : (exercise.type === 'time' ? Math.max(0, runner.elapsedSec || 0) : runner.completedRepsInSet || target);
+  const weight = split ? 0 : (exercise.defaultTarget?.weight ?? 0);
+
+  recordSet(exercise, {
+    reps: exercise.type === 'time' || split ? null : actual,
+    leftReps: left,
+    rightReps: right,
+    durationSeconds: exercise.type === 'time' && !split ? actual : null,
+    weightKg: weight
+  });
+
+  runner.leftDone = null;
+  runner.rightDone = null;
+  advanceAfterSet();
+}
+
+// 手动“完成本组”（无节拍动作使用）
 function completeSet() {
   stopRunnerTimer();
   const item = currentRunnerItem();
   const exercise = item.exercise;
-  const isSide = exercise.type === 'side';
-  const actual = isSide ? null : clampInt($('actualValue').value, 0, 9999, 0);
-  const left = isSide ? clampInt($('actualLeft').value, 0, 9999, 0) : null;
-  const right = isSide ? clampInt($('actualRight').value, 0, 9999, 0) : null;
-  const weight = isSide ? 0 : Math.max(0, Number($('actualWeight').value) || 0);
+  const isSide = isSplitSide(exercise);
+  const actual = isSide ? null : clampInt($('actualValue')?.value, 0, 9999, 0);
+  const left = isSide ? clampInt($('actualLeft')?.value, 0, 9999, 0) : null;
+  const right = isSide ? clampInt($('actualRight')?.value, 0, 9999, 0) : null;
+  const weight = isSide ? 0 : Math.max(0, Number($('actualWeight')?.value) || 0);
 
   if (isSide ? (left <= 0 && right <= 0) : (actual <= 0)) {
     showToast('请输入本组实际完成数据');
@@ -1454,21 +1582,28 @@ function completeSet() {
     return;
   }
 
+  recordSet(exercise, {
+    reps: exercise.type === 'time' || isSide ? null : actual,
+    leftReps: left,
+    rightReps: right,
+    durationSeconds: exercise.type === 'time' ? actual : null,
+    weightKg: weight
+  });
+  advanceAfterSet();
+}
+
+function recordSet(exercise, payload) {
   let exerciseRecord = runner.session.exercises.find(e => e.exerciseId === exercise.id);
   if (!exerciseRecord) {
     exerciseRecord = { exerciseId: exercise.id, name: exercise.name, type: exercise.type, sets: [] };
     runner.session.exercises.push(exerciseRecord);
   }
-  exerciseRecord.sets.push({
-    setNumber: runner.setIndex,
-    reps: exercise.type === 'time' || isSide ? null : actual,
-    leftReps: left,
-    rightReps: right,
-    durationSeconds: exercise.type === 'time' ? actual : null,
-    weightKg: weight,
-    completedAt: nowIso()
-  });
+  exerciseRecord.sets.push({ setNumber: runner.setIndex, ...payload, completedAt: nowIso() });
+}
 
+// 本组结束后：同动作还有组 → 自动组间休息；否则进入下一动作（动作间也会休息）
+function advanceAfterSet() {
+  const item = currentRunnerItem();
   if (runner.setIndex < item.sets && item.restSeconds > 0) {
     beginRest({ index: runner.index, setIndex: runner.setIndex + 1 });
   } else {
@@ -1489,14 +1624,26 @@ function getNextStep() {
 
 function beginRest(target) {
   stopRunnerTimer();
+  if (!runner.restKind) runner.restKind = 'set';
   runner.pendingAdvance = target;
   runner.phase = 'rest';
   setupRunnerPhase(false);
 }
 
+// 休息结束（或手动跳过）后继续：左右切换 → 右侧训练；否则按目标推进
 function applyPendingAdvance() {
   const target = runner.pendingAdvance;
   runner.pendingAdvance = null;
+  runner.restKind = null;
+
+  if (target?.sideSwitch) {
+    runner.enterSideRight = true;
+    runner.index = target.index;
+    runner.setIndex = target.setIndex;
+    runner.phase = 'work';
+    setupRunnerPhase(false);
+    return;
+  }
   if (target) {
     runner.index = target.index;
     runner.setIndex = target.setIndex;
@@ -1836,6 +1983,21 @@ function saveReminders() {
   try { localStorage.setItem(REMINDERS_KEY, JSON.stringify({ rules: reminderState.rules })); } catch (_) {}
 }
 
+// 恢复上次保存的提醒表单默认值
+function restoreReminderDraft() {
+  try {
+    const d = JSON.parse(localStorage.getItem(REMINDER_DRAFT_KEY) || 'null');
+    if (!d || typeof d !== 'object') return;
+    const typeSel = $('reminderType');
+    if (typeSel && d.type) typeSel.value = d.type;
+    if ($('reminderTime') && d.time) $('reminderTime').value = d.time;
+    if ($('reminderDate') && d.date) $('reminderDate').value = d.date;
+    if ($('reminderStart') && d.start) $('reminderStart').value = d.start;
+    if ($('reminderEnd') && d.end) $('reminderEnd').value = d.end;
+    if ($('reminderText')) $('reminderText').value = d.text || '';
+  } catch (_) {}
+}
+
 const firedKey = (rule, dateKey, hour) => `fitlog-fired-${rule.id}-${dateKey}${hour != null ? '-' + hour : ''}`;
 
 function wasFired(rule, dateKey, hour) {
@@ -1856,42 +2018,83 @@ function parseHHMM(s) {
   return { h: Math.min(23, Math.max(0, +m[1])), min: Math.min(59, Math.max(0, +m[2])) };
 }
 
+let reminderRingTimer = null;
+
+// 响铃：连续播多轮提示音，直到用户关闭弹窗（声音兜底，确保能注意到）
+function startReminderRing() {
+  stopReminderRing();
+  unlockAudio();
+  let count = 0;
+  const ring = () => {
+    playBeep(1320, 180, 2, 150);
+    count += 1;
+    if (count >= 12) stopReminderRing();
+  };
+  ring();
+  reminderRingTimer = setInterval(ring, 900);
+}
+
+function stopReminderRing() {
+  if (reminderRingTimer) {
+    clearInterval(reminderRingTimer);
+    reminderRingTimer = null;
+  }
+}
+
 function fireReminderNotification(rule) {
   const title = 'FitLog 训练提醒';
   const body = rule.text || '该动一动啦！';
-  unlockAudio();
-  playRestEndCue();
+  startReminderRing();
   speak(rule.text || '该起来活动一下了', true, 'key');
+
+  // 强制弹窗提醒（不依赖系统通知是否成功）
+  const textEl = $('reminderAlertText');
+  const timeEl = $('reminderAlertTime');
+  if (textEl) textEl.textContent = body;
+  if (timeEl) timeEl.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  const dlg = $('reminderAlertDialog');
+  if (dlg && typeof dlg.showModal === 'function' && !dlg.open) {
+    try { dlg.showModal(); } catch (_) {}
+  }
+  showToast(body);
+
+  // 系统通知作为补充（后台也能收到）
   if ('Notification' in window && Notification.permission === 'granted' && 'serviceWorker' in navigator) {
     navigator.serviceWorker.ready.then(reg => {
       if (reg.showNotification) {
-        reg.showNotification(title, { body, tag: 'fitlog-reminder-' + rule.id, icon: './icon-192.png' }).catch(() => {});
+        reg.showNotification(title, { body, tag: 'fitlog-reminder-' + rule.id + '-' + Date.now(), icon: './icon-192.png', requireInteraction: true }).catch(() => {});
       }
     }).catch(() => {});
   } else if ('Notification' in window && Notification.permission === 'granted') {
     try { new Notification(title, { body, icon: './icon-192.png' }); } catch (_) {}
   }
-  showToast(body);
 }
 
 function checkReminders() {
   const now = new Date();
   const dateKey = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
   const dateIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const curMin = now.getHours() * 60 + now.getMinutes();
   reminderState.rules.forEach(rule => {
     if (!rule.enabled) return;
-    if ((rule.type === 'daily' || rule.type === 'once') && hhmm === rule.time) {
-      if (rule.type === 'once' && rule.date && rule.date !== dateIso) return;
-      if (!wasFired(rule, dateKey)) {
-        markFired(rule, dateKey);
-        fireReminderNotification(rule);
+    if (rule.type === 'daily' || rule.type === 'once') {
+      const t = parseHHMM(rule.time);
+      if (!t) return;
+      // ±2 分钟容错，避免后台节流错过整点；markFired 保证每条每天只响一次
+      if (Math.abs(curMin - (t.h * 60 + t.min)) <= 2) {
+        if (rule.type === 'once' && rule.date && rule.date !== dateIso) return;
+        if (!wasFired(rule, dateKey)) {
+          markFired(rule, dateKey);
+          fireReminderNotification(rule);
+        }
       }
-    } else if (rule.type === 'hourly' && now.getMinutes() <= 1) {
+    } else if (rule.type === 'hourly') {
       const s = parseHHMM(rule.start), e = parseHHMM(rule.end);
-      if (s && e && now.getHours() >= s.h && now.getHours() <= e.h && !wasFired(rule, dateKey, now.getHours())) {
-        markFired(rule, dateKey, now.getHours());
-        fireReminderNotification(rule);
+      if (s && e && now.getHours() >= s.h && now.getHours() <= e.h && now.getMinutes() <= 2) {
+        if (!wasFired(rule, dateKey, now.getHours())) {
+          markFired(rule, dateKey, now.getHours());
+          fireReminderNotification(rule);
+        }
       }
     }
   });
@@ -1900,7 +2103,15 @@ function checkReminders() {
 function startReminderTicker() {
   if (reminderState.tickTimer) clearInterval(reminderState.tickTimer);
   checkReminders();
-  reminderState.tickTimer = setInterval(checkReminders, 30000);
+  // 缩到 15 秒，提高命中率；markFired 防止重复
+  reminderState.tickTimer = setInterval(checkReminders, 15000);
+  // 回到前台时立即补检查一次
+  if (!reminderState.visBound) {
+    reminderState.visBound = true;
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) checkReminders();
+    });
+  }
 }
 
 function upcomingTriggerTimes(rule, from, hoursAhead) {
@@ -2010,6 +2221,29 @@ function initReminders() {
   if (typeSel) typeSel.addEventListener('change', toggleFields);
   toggleFields();
 
+  // 保存表单设置为默认值（下次打开自动带入）
+  const saveBtn = $('reminderSaveBtn');
+  if (saveBtn) saveBtn.addEventListener('click', () => {
+    const draft = {
+      type: typeSel?.value || 'daily',
+      time: $('reminderTime')?.value || '07:00',
+      date: $('reminderDate')?.value || '',
+      start: $('reminderStart')?.value || '09:00',
+      end: $('reminderEnd')?.value || '17:00',
+      text: ($('reminderText')?.value || '').trim()
+    };
+    try { localStorage.setItem(REMINDER_DRAFT_KEY, JSON.stringify(draft)); } catch (_) {}
+    showToast('设置已保存');
+  });
+  restoreReminderDraft();
+
+  // 提醒弹窗：关闭并停止响铃
+  const alertOk = $('reminderAlertOk');
+  if (alertOk) alertOk.addEventListener('click', () => {
+    stopReminderRing();
+    closeDialog('reminderAlertDialog');
+  });
+
   const addBtn = $('reminderAddBtn');
   if (addBtn) addBtn.addEventListener('click', () => {
     const type = typeSel?.value || 'daily';
@@ -2079,7 +2313,7 @@ async function refreshCurrentPage() {
 
 function bindEvents() {
   document.querySelectorAll('.nav-item').forEach(btn => btn.addEventListener('click', () => navigate(btn.dataset.page)));
-  document.querySelectorAll('[data-go]').forEach(btn => btn.addEventListener('click', () => navigate(btn.dataset.go)));
+  document.querySelectorAll('[data-go]').forEach(btn => btn.addEventListener('click', () => navigate(btn.dataset.go, { focus: btn.dataset.focus })));
   document.querySelectorAll('[data-close]').forEach(btn => btn.addEventListener('click', () => {
     const id = btn.dataset.close;
     if (id === 'exerciseDialog') setVideoPreviewSrc(null);

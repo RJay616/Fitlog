@@ -1,8 +1,8 @@
 {
   "name": "FitLog 我的私人运动教练",
   "short_name": "FitLog",
-  "description": "个人运动训练记录与指导工具，支持动作库、课程编排、组间倒计时、语音计数、纯视频跟练、训练提醒与 DeepSeek 分析。当前版本 1.4。",
-  "version": "1.4",
+  "description": "个人运动训练记录与指导工具，支持动作库、课程编排、组间自动流转、左右分步、节拍彩色圆形提示、语音计数、纯视频跟练、训练提醒与 DeepSeek 分析。当前版本 1.5。",
+  "version": "1.5",
   "lang": "zh-CN",
   "start_url": "./",
   "scope": "./",
