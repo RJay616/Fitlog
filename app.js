@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.13';
+const APP_VERSION = '1.14';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -63,6 +63,10 @@ let isLongSpeechPlaying = false;
 let speechWatchdog = null;
 let speechFinish = null;
 let speechKeepAlive = null;
+// 播报进度监听：安卓 TTS 的 onend 常不触发，用 speaking 状态兜底，避免播报标志卡死导致报数长期排队
+let speechProgressTimer = null;
+let speechProgressQuiet = 0;
+let speechProgressStartAt = 0;
 
 // 备份提醒（持久化）：记录上次导出 JSON 备份的时间戳
 const LAST_BACKUP_KEY = 'fitlog-last-backup-at';
@@ -280,6 +284,9 @@ function cancelSpeech() {
   speechFinish = null;
   if (speechKeepAlive) clearInterval(speechKeepAlive);
   speechKeepAlive = null;
+  if (speechProgressTimer) clearInterval(speechProgressTimer);
+  speechProgressTimer = null;
+  speechProgressQuiet = 0;
   speechQueue.length = 0;
   isSpeaking = false;
   isLongSpeechPlaying = false;
@@ -318,16 +325,42 @@ function trimSpeechQueue() {
   }
 }
 
-// 播报期间积压的报数最多保留最近 4 个：播报结束后按顺序、按节奏补播，
-// 既不会跳号，也不会因积压太多而一口气连读/严重滞后
+// 播报期间积压的报数只保留「最新一个」：它最接近当前真实进度。
+// 播报一结束立刻补报这个数，然后跟上动作节奏——既不连读（无积压串），
+// 也不会报出过时的旧数字。重复的旧数直接丢弃。
 function trimDeferredCounts() {
   const counts = speechQueue.filter(q => q.kind === 'count');
-  if (counts.length > 4) {
-    const drop = new Set(counts.slice(0, counts.length - 4));
+  if (counts.length > 1) {
+    const keep = counts[counts.length - 1];
+    let seen = false;
     for (let i = speechQueue.length - 1; i >= 0; i--) {
-      if (drop.has(speechQueue[i])) speechQueue.splice(i, 1);
+      if (speechQueue[i].kind !== 'count') continue;
+      if (speechQueue[i] === keep && !seen) { seen = true; continue; }
+      speechQueue.splice(i, 1);
     }
   }
+}
+
+// 用 speaking 状态兜底检测播报是否真的念完：
+// 安卓 TTS 的 onend 经常不触发，若只靠 watchdog（最长 30 秒），播报标志会卡死，
+// 期间报数一直排队，播报念完后才集中吐出 → 就是「等很久才连读」的根因。
+function startSpeechProgressWatch() {
+  if (speechProgressTimer) clearInterval(speechProgressTimer);
+  speechProgressQuiet = 0;
+  speechProgressStartAt = Date.now();
+  speechProgressTimer = setInterval(() => {
+    // 启动保护期 900ms：安卓 TTS 真正开口前 speaking 会短暂为 false，避免误判念完
+    if (Date.now() - speechProgressStartAt < 900) return;
+    let active = false;
+    try { active = !!(window.speechSynthesis.speaking || window.speechSynthesis.pending); } catch (_) {}
+    if (!active) {
+      speechProgressQuiet += 1;
+      // 连续 ~300ms 空闲即判定本句念完，主动结束，让排队的报数立刻接上
+      if (speechProgressQuiet >= 3 && speechFinish) speechFinish();
+    } else {
+      speechProgressQuiet = 0;
+    }
+  }, 100);
 }
 
 // 报数：提示音始终响（即使静音模式也听得见节奏），语音按模式决定
@@ -348,15 +381,19 @@ function processSpeechQueue() {
     settled = true;
     if (speechWatchdog) clearTimeout(speechWatchdog);
     speechWatchdog = null;
+    if (speechProgressTimer) clearInterval(speechProgressTimer);
+    speechProgressTimer = null;
+    speechProgressQuiet = 0;
     speechFinish = null;
     isSpeaking = false;
     isLongSpeechPlaying = false;
     if (speechKeepAlive) clearInterval(speechKeepAlive);
     speechKeepAlive = null;
-    // 补播报数时留出正常间隔，避免长句结束后积压的数字连成一串；
-    // 长句→报数或普通衔接保持紧凑
+    // 衔接间隔：长句→报数、报数→报数都保持正常报数节奏，数字不挤在一起；
+    // 播报期间只留了最新一个报数，所以这里不会有「一串旧数字」连读。
     const nextIsCount = speechQueue.length && speechQueue[0].kind === 'count';
-    const gap = (item.kind === 'count' && nextIsCount) ? 420 : 60;
+    let gap = 90;
+    if (nextIsCount) gap = item.kind === 'count' ? 380 : 220;
     setTimeout(processSpeechQueue, gap);
   };
 
@@ -386,7 +423,7 @@ function processSpeechQueue() {
     } catch (_) {}
   }, 6000);
 
-  // 长句放宽超时（按每字 ~420ms + 3秒缓冲，上限 30 秒），避免念得慢被误掐断；报数保持紧凑
+  // watchdog 只作最终兜底；真正结束由 onend 或 speaking 进度监听提前判定
   const estimatedMs = item.kind === 'count'
     ? Math.min(5000, 1200 + text.length * 300)
     : Math.min(30000, 3000 + text.length * 420);
@@ -395,7 +432,12 @@ function processSpeechQueue() {
     if (speechFinish) speechFinish();
   }, estimatedMs);
 
-  try { window.speechSynthesis.speak(utterance); } catch (_) { finish(); }
+  try {
+    window.speechSynthesis.speak(utterance);
+    // 启动进度监听：安卓 onend 不触发时，靠 speaking 状态判定念完，
+    // 避免播报标志长时间卡住、报数一直排队（「等很久才报」的根因）
+    startSpeechProgressWatch();
+  } catch (_) { finish(); }
 }
 
 if ('speechSynthesis' in window) {
