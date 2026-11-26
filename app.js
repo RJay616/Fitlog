@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.5';
+const APP_VERSION = '1.6';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -38,6 +38,8 @@ let toastTimer;
 let deferredInstallPrompt = null;
 let runner = null;
 let timerHandle = null;
+// 训练进度快照（退出/刷新后回来可恢复）
+const RUNNER_SNAPSHOT_KEY = 'fitlog-runner-snapshot';
 
 // 课程编辑器临时状态
 let draftPlanItems = []; // [{ exerciseId, sets, target, restSeconds }]
@@ -723,12 +725,10 @@ function renderTempoPhaseEditor(phases = []) {
     <div class="tempo-phase-row" data-phase-idx="${idx}">
       <input type="text" class="tp-label" value="${escapeHtml(p.label || '')}" placeholder="如：吸气-向下">
       <label class="tp-color-wrap" title="自定义该阶段显示颜色">
+        <span class="tp-color-dot" style="background:${/^#[0-9a-f]{6}$/i.test(p.color || '') ? p.color : PHASE_COLOR.other}"></span>
         <input type="color" class="tp-color" value="${/^#[0-9a-f]{6}$/i.test(p.color || '') ? p.color : PHASE_COLOR.other}">
       </label>
       <input type="number" class="tp-sec" min="1" max="120" value="${clampInt(p.seconds, 1, 120, 3)}" title="持续秒数">
-      <label class="tempo-count-toggle" title="保留阶段标记（不影响报数，训练时每秒滴答、每完成一次报数）">
-        <input type="checkbox" class="tp-count" ${p.countOut ? 'checked' : ''}>阶段
-      </label>
       <button type="button" class="tempo-del-btn" data-remove-phase="${idx}" title="删除阶段">×</button>
     </div>
   `).join('');
@@ -739,10 +739,9 @@ function collectTempoPhasesFromEditor() {
   return rows.map(row => {
     const label = row.querySelector('.tp-label')?.value.trim() || '节拍阶段';
     const seconds = clampInt(row.querySelector('.tp-sec')?.value, 1, 120, 3);
-    const countOut = Boolean(row.querySelector('.tp-count')?.checked);
     const rawColor = row.querySelector('.tp-color')?.value || '';
     const color = /^#[0-9a-f]{6}$/i.test(rawColor) ? rawColor : PHASE_COLOR.other;
-    return { label, seconds, countOut, color, voice: label };
+    return { label, seconds, color, voice: label };
   });
 }
 
@@ -1117,10 +1116,121 @@ async function savePlan(event) {
   showToast('课程已保存');
 }
 
+// ===== 训练进度快照：退出/刷新后保存暂停点，回来询问是否继续 =====
+function runnerSnapshotData() {
+  if (!runner) return null;
+  return {
+    planId: runner.planId,
+    planName: runner.planName,
+    index: runner.index,
+    setIndex: runner.setIndex,
+    phase: runner.phase,
+    remaining: runner.remaining,
+    tempoIndex: runner.tempoIndex,
+    tempoSecLeft: runner.tempoSecLeft,
+    completedRepsInSet: runner.completedRepsInSet,
+    elapsedSec: runner.elapsedSec,
+    sideStage: runner.sideStage,
+    enterSideRight: runner.enterSideRight,
+    leftDone: runner.leftDone,
+    rightDone: runner.rightDone,
+    restKind: runner.restKind,
+    pendingAdvance: runner.pendingAdvance,
+    paused: true,
+    session: runner.session,
+    pausedAt: nowIso()
+  };
+}
+
+function saveRunnerSnapshot() {
+  const data = runnerSnapshotData();
+  if (!data) return;
+  try { sessionStorage.setItem(RUNNER_SNAPSHOT_KEY, JSON.stringify(data)); } catch (_) {}
+}
+
+function clearRunnerSnapshot() {
+  try { sessionStorage.removeItem(RUNNER_SNAPSHOT_KEY); } catch (_) {}
+}
+
+function loadRunnerSnapshot() {
+  try {
+    const raw = sessionStorage.getItem(RUNNER_SNAPSHOT_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    return data && data.planId && data.session ? data : null;
+  } catch (_) { return null; }
+}
+
+// 暂停当前训练：停止计时器、视频、语音，并保存快照
+function pauseRunner() {
+  if (!runner || runner.phase === 'done') return;
+  stopRunnerTimer();
+  const video = $('runnerVideo');
+  if (video && typeof video.pause === 'function') video.pause();
+  cancelSpeech();
+  runner.paused = true;
+  saveRunnerSnapshot();
+  renderRunner();
+  showToast('训练已暂停，进度已保存');
+}
+
+// 继续训练：清除暂停标记，按当前阶段重启计时/节拍/视频
+function resumeRunner() {
+  if (!runner) return;
+  runner.paused = false;
+  clearRunnerSnapshot();
+  const exercise = currentRunnerItem()?.exercise;
+  if (runner.phase === 'work' && exercise) {
+    const hasTempo = Array.isArray(exercise.tempoPhases) && exercise.tempoPhases.length > 0;
+    if (hasTempo) startTempoPhase(runner.tempoIndex || 0);
+    else if (!exercise.pureVideo) startPlainTickLoop();
+  } else if (runner.phase === 'prepare') {
+    startCountdownLoop('prepare');
+  } else if (runner.phase === 'rest') {
+    startCountdownLoop('rest');
+  }
+  const video = $('runnerVideo');
+  if (runner.phase === 'video' && video && typeof video.play === 'function') video.play().catch(() => {});
+  renderRunner();
+}
+
+// 从快照恢复训练状态（重新载入动作数据）
+async function restoreRunnerFromSnapshot(snap) {
+  const plan = (await getAll('plans')).find(p => p.id === snap.planId);
+  if (!plan) { clearRunnerSnapshot(); return false; }
+  const all = await getAll('exercises');
+  const map = new Map(all.map(e => [e.id, e]));
+  const items = plan.items.map(i => ({ ...i, exercise: map.get(i.exerciseId) })).filter(i => i.exercise);
+  if (!items.length) { clearRunnerSnapshot(); return false; }
+  runner = {
+    planId: snap.planId,
+    planName: snap.planName,
+    items,
+    index: snap.index || 0,
+    setIndex: snap.setIndex || 1,
+    session: snap.session,
+    phase: snap.phase || 'work',
+    remaining: snap.remaining || 0,
+    tempoIndex: snap.tempoIndex || 0,
+    tempoSecLeft: snap.tempoSecLeft || 0,
+    completedRepsInSet: snap.completedRepsInSet || 0,
+    elapsedSec: snap.elapsedSec || 0,
+    sideStage: snap.sideStage || null,
+    enterSideRight: Boolean(snap.enterSideRight),
+    leftDone: snap.leftDone ?? null,
+    rightDone: snap.rightDone ?? null,
+    restKind: snap.restKind || null,
+    pendingAdvance: snap.pendingAdvance || null,
+    paused: true
+  };
+  return true;
+}
+
 // 训练执行器（5秒起势准备 + 多阶段呼吸节拍引导 + 语音播报）
 async function startPlan(id) {
   const plan = (await getAll('plans')).find(p => p.id === id);
   if (!plan) return;
+  clearRunnerSnapshot();
   const all = await getAll('exercises');
   const map = new Map(all.map(e => [e.id, e]));
   const items = plan.items.map(i => ({ ...i, exercise: map.get(i.exerciseId) })).filter(i => i.exercise);
@@ -1535,6 +1645,20 @@ function renderRunner() {
   } else if (runner.phase === 'done') {
     $('finishSessionBtn').onclick = finishSession;
   }
+
+  // 暂停态：加遮罩提示，避免误以为卡住
+  const bodyEl = $('runnerBody');
+  if (bodyEl) {
+    bodyEl.classList.toggle('is-paused', Boolean(runner.paused));
+    const oldMask = bodyEl.querySelector('.runner-paused-mask');
+    if (oldMask) oldMask.remove();
+    if (runner.paused) {
+      const mask = document.createElement('div');
+      mask.className = 'runner-paused-mask';
+      mask.innerHTML = `<div class="rpm-card"><div class="rpm-icon">⏸</div><b>训练已暂停</b><p>点右上角 ▶ 继续训练</p></div>`;
+      bodyEl.insertBefore(mask, bodyEl.firstChild);
+    }
+  }
 }
 
 // 自动结算本组：用节拍累计的次数作为实际次数，无需手动输入
@@ -1694,6 +1818,7 @@ function stopRunnerTimer() {
 async function finishSession() {
   if (!runner) return;
   stopRunnerTimer();
+  clearRunnerSnapshot();
   stopAllVideos();
   cancelSpeech();
   await releaseWakeLock();
@@ -1715,14 +1840,24 @@ function closeRunner() {
     closeDialog('runnerDialog');
     return;
   }
-  if (confirm('训练尚未结束。确定退出吗？当前训练数据将不会保存。')) {
-    stopRunnerTimer();
+  if (runner.phase === 'done') {
     stopAllVideos();
     cancelSpeech();
-    releaseWakeLock();
-    runner = null;
     closeDialog('runnerDialog');
+    return;
   }
+  // 退出时保存进度快照，后续再打开会询问是否继续
+  runner.paused = true;
+  stopRunnerTimer();
+  const video = $('runnerVideo');
+  if (video && typeof video.pause === 'function') video.pause();
+  saveRunnerSnapshot();
+  stopAllVideos();
+  cancelSpeech();
+  releaseWakeLock();
+  runner = null;
+  closeDialog('runnerDialog');
+  showToast('训练已退出，下次打开可继续');
 }
 
 // 历史与备份
@@ -2389,6 +2524,13 @@ function bindEvents() {
     renderTempoPhaseEditor(current);
   });
 
+  // 选择颜色时，预览圆点实时变成所选颜色
+  $('tempoPhaseList').addEventListener('input', e => {
+    if (!e.target.classList.contains('tp-color')) return;
+    const dot = e.target.closest('.tp-color-wrap')?.querySelector('.tp-color-dot');
+    if (dot) dot.style.background = e.target.value;
+  });
+
   // 动作详情 Tab 与图表切换
   $('detailTabs').addEventListener('click', e => {
     const tabBtn = e.target.closest('[data-detail-tab]');
@@ -2468,6 +2610,43 @@ function bindEvents() {
 
   // 执行器与数据备份事件
   $('runnerCloseBtn').addEventListener('click', closeRunner);
+  const pauseBtn = $('runnerPauseBtn');
+  if (pauseBtn) pauseBtn.addEventListener('click', () => {
+    if (!runner || runner.phase === 'done') return;
+    if (runner.paused) resumeRunner();
+    else pauseRunner();
+    pauseBtn.textContent = runner.paused ? '▶' : '⏸';
+    pauseBtn.title = runner.paused ? '继续训练' : '暂停训练';
+  });
+  const endBtn = $('runnerEndBtn');
+  if (endBtn) endBtn.addEventListener('click', () => {
+    if (!runner) return;
+    const doneSets = runner.session?.exercises?.length || 0;
+    if (confirm(doneSets > 0 ? `确定结束本次训练吗？已完成的 ${doneSets} 组会保存。` : '确定结束本次训练吗？尚未完成任何组，本次不保存记录。')) {
+      clearRunnerSnapshot();
+      finishSession();
+    }
+  });
+
+  // 恢复训练弹窗
+  const resumeYes = $('resumeTrainingYes');
+  const resumeNo = $('resumeTrainingNo');
+  if (resumeYes) resumeYes.addEventListener('click', async () => {
+    closeDialog('resumeTrainingDialog');
+    if (await restoreRunnerFromSnapshot(loadRunnerSnapshot())) {
+      $('runnerPlanName').textContent = runner.planName;
+      $('runnerPauseBtn').textContent = '▶';
+      openDialog('runnerDialog');
+      renderRunner();
+      showToast('已恢复上次训练，点 ▶ 继续');
+    }
+  });
+  if (resumeNo) resumeNo.addEventListener('click', () => {
+    closeDialog('resumeTrainingDialog');
+    clearRunnerSnapshot();
+    showToast('已放弃上次的训练进度');
+  });
+
   $('exportJsonBtn').addEventListener('click', exportJson);
   $('exportCsvBtn').addEventListener('click', exportCsv);
   $('btnDeepseekExport').addEventListener('click', exportDeepseek);
@@ -2521,9 +2700,16 @@ function bindEvents() {
 
   // 切后台只暂停；退出页面/返回缓存页时彻底关闭视频声音
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) pauseAllVideos();
+    if (document.hidden) {
+      pauseAllVideos();
+      // 训练进行中切后台：保存快照，便于回来续练
+      if (runner && runner.phase !== 'done' && !runner.paused) saveRunnerSnapshot();
+    }
   });
-  window.addEventListener('pagehide', stopAllVideos);
+  window.addEventListener('pagehide', () => {
+    stopAllVideos();
+    if (runner && runner.phase !== 'done' && !runner.paused) saveRunnerSnapshot();
+  });
   window.addEventListener('beforeunload', stopAllVideos);
   window.addEventListener('pageshow', event => {
     if (event.persisted) stopAllVideos();
@@ -2605,6 +2791,15 @@ async function init() {
     restoreSavedPage();
     $('storageStatus').textContent = '本地数据库已连接。';
     await scanCacheSizes();
+
+    // 若存在未完成的训练快照，询问是否继续
+    const snap = loadRunnerSnapshot();
+    if (snap) {
+      const pausedAt = snap.pausedAt ? new Date(snap.pausedAt).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
+      const infoEl = $('resumeTrainingText');
+      if (infoEl) infoEl.textContent = `“${snap.planName || '上次课程'}”尚未完成${pausedAt ? `（暂停于 ${pausedAt}）` : ''}，是否继续？`;
+      openDialog('resumeTrainingDialog');
+    }
   } catch (error) {
     console.error(error);
     alert(`FitLog初始化失败：${error.message}。请使用较新的Chrome浏览器，并确认未处于无痕模式。`);
