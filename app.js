@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.14';
+const APP_VERSION = '1.15';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -459,6 +459,13 @@ function isVideoFullscreen(videoEl) {
   } catch (_) {}
   return false;
 }
+// 退出页面全屏（关闭训练时用），安卓按返回键也可退出，这里做主动清理
+function exitPageFullscreen() {
+  try {
+    if (document.fullscreenElement && typeof document.exitFullscreen === 'function') document.exitFullscreen().catch(() => {});
+    else if (document.webkitFullscreenElement && typeof document.webkitExitFullscreen === 'function') document.webkitExitFullscreen();
+  } catch (_) {}
+}
 function enterVideoFullscreen(videoEl) {
   if (!videoEl) return;
   if (isVideoFullscreen(videoEl)) return;
@@ -478,6 +485,25 @@ function enterVideoFullscreen(videoEl) {
     if (!isVideoFullscreen(videoEl) && typeof videoEl.msRequestFullscreen === 'function') {
       videoEl.msRequestFullscreen();
     }
+  } catch (_) {}
+}
+
+// 在用户点击手势的同步调用栈里请求「整个页面」全屏。
+// 安卓 Chrome 只认点击瞬间的手势；一旦进到 async/定时器里手势就失效、必被拒绝。
+// 因此本函数必须在事件处理器里同步调用（不能在 await 之后），且无任何异步包装。
+function requestPageFullscreenOnGesture() {
+  if (isVideoFullscreen()) return;
+  try {
+    const el = document.documentElement || document.body;
+    if (el && typeof el.requestFullscreen === 'function') {
+      const p = el.requestFullscreen();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+      return;
+    }
+  } catch (_) {}
+  try {
+    const el = document.documentElement || document.body;
+    if (el && typeof el.webkitRequestFullscreen === 'function') el.webkitRequestFullscreen();
   } catch (_) {}
 }
 
@@ -1107,7 +1133,10 @@ async function renderPlans() {
   const exercises = await getAll('exercises');
   const map = new Map(exercises.map(e => [e.id, e]));
   $('planList').innerHTML = plans.length
-    ? plans.map(p => `<article class="item-card"><div class="item-top"><div><h3>${escapeHtml(p.name)}</h3><p>${(p.items || []).map(i => escapeHtml(map.get(i.exerciseId)?.name || '已删除动作')).join('、')}</p></div><span class="tag">${(p.items || []).length}个动作</span></div><div class="card-actions"><button class="small-btn blue" data-start-plan="${escapeHtml(p.id)}">开始训练</button><button class="small-btn" data-edit-plan="${escapeHtml(p.id)}">编辑</button><button class="small-btn" data-delete-plan="${escapeHtml(p.id)}">删除</button></div></article>`).join('')
+    ? plans.map(p => {
+        const hasVideo = (p.items || []).some(i => Boolean(map.get(i.exerciseId)?.pureVideo)) ? '1' : '0';
+        return `<article class="item-card"><div class="item-top"><div><h3>${escapeHtml(p.name)}</h3><p>${(p.items || []).map(i => escapeHtml(map.get(i.exerciseId)?.name || '已删除动作')).join('、')}</p></div><span class="tag">${(p.items || []).length}个动作</span></div><div class="card-actions"><button class="small-btn blue" data-start-plan="${escapeHtml(p.id)}" data-has-video="${hasVideo}">开始训练</button><button class="small-btn" data-edit-plan="${escapeHtml(p.id)}">编辑</button><button class="small-btn" data-delete-plan="${escapeHtml(p.id)}">删除</button></div></article>`;
+      }).join('')
     : '<div class="list-card empty-state">还没有训练课程。点击右上角新建第一套课程。</div>';
 }
 
@@ -1254,6 +1283,7 @@ function runnerSnapshotData() {
   return {
     planId: runner.planId,
     planName: runner.planName,
+    hasVideo: Boolean(runner.hasVideo),
     index: runner.index,
     setIndex: runner.setIndex,
     phase: runner.phase,
@@ -1309,6 +1339,8 @@ function pauseRunner() {
 // 继续训练：清除暂停标记，按当前阶段重启计时/节拍/视频
 function resumeRunner() {
   if (!runner) return;
+  // 继续训练同样是用户点击手势：纯视频课程趁此刻同步申请全屏（若已在全屏则自动跳过）
+  if (runner.hasVideo) requestPageFullscreenOnGesture();
   runner.paused = false;
   clearRunnerSnapshot();
   const exercise = currentRunnerItem()?.exercise;
@@ -1337,6 +1369,7 @@ async function restoreRunnerFromSnapshot(snap) {
   runner = {
     planId: snap.planId,
     planName: snap.planName,
+    hasVideo: Boolean(snap.hasVideo) || items.some(i => Boolean(i.exercise?.pureVideo)),
     items,
     index: snap.index || 0,
     setIndex: snap.setIndex || 1,
@@ -1374,9 +1407,11 @@ async function startPlan(id) {
   const firstEx = items[0].exercise;
   const firstPure = Boolean(firstEx.pureVideo);
   const prepSec = clampInt(firstEx.prepSeconds, 0, 30, firstPure ? 10 : 5);
+  const hasVideo = items.some(i => Boolean(i.exercise?.pureVideo));
   runner = {
     planId: plan.id,
     planName: plan.name,
+    hasVideo,
     items,
     index: 0,
     setIndex: 1,
@@ -2088,12 +2123,14 @@ function closeRunner() {
   if (!runner) {
     stopAllVideos();
     cancelSpeech();
+    exitPageFullscreen();
     closeDialog('runnerDialog');
     return;
   }
   if (runner.phase === 'done') {
     stopAllVideos();
     cancelSpeech();
+    exitPageFullscreen();
     closeDialog('runnerDialog');
     return;
   }
@@ -2106,6 +2143,7 @@ function closeRunner() {
   stopAllVideos();
   cancelSpeech();
   releaseWakeLock();
+  exitPageFullscreen();
   runner = null;
   closeDialog('runnerDialog');
   showToast('训练已退出，下次打开可继续');
@@ -2483,8 +2521,11 @@ function bindEvents() {
   const resumeYes = $('resumeTrainingYes');
   const resumeNo = $('resumeTrainingNo');
   if (resumeYes) resumeYes.addEventListener('click', async () => {
+    // 手势同步栈里先判断快照是否含纯视频并申请全屏（await 之后手势会失效，故这里全同步）
+    const snapNow = loadRunnerSnapshot();
+    if (snapNow && snapNow.hasVideo) requestPageFullscreenOnGesture();
     closeDialog('resumeTrainingDialog');
-    if (await restoreRunnerFromSnapshot(loadRunnerSnapshot())) {
+    if (await restoreRunnerFromSnapshot(snapNow)) {
       $('runnerPlanName').textContent = runner.planName;
       openDialog('runnerDialog');
       renderRunner();
@@ -2603,7 +2644,11 @@ function bindEvents() {
       await renderPlans();
       showToast('课程已删除');
     }
-    if (target.dataset.startPlan) startPlan(target.dataset.startPlan);
+    if (target.dataset.startPlan) {
+      // 纯视频课程：趁用户点击手势还有效，同步申请整个页面全屏（必须同步、不能 await）
+      if (target.dataset.hasVideo === '1') requestPageFullscreenOnGesture();
+      startPlan(target.dataset.startPlan);
+    }
     if (target.dataset.sessionDetail) showSessionDetail(target.dataset.sessionDetail);
     if (target.dataset.sessionDelete && confirm('确定删除这条训练记录吗？删除后无法恢复。')) {
       await remove('sessions', target.dataset.sessionDelete);
