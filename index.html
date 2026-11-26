@@ -14,7 +14,7 @@
   <header class="topbar">
     <div class="brand"><div class="brand-mark">F</div><div><strong>FitLog</strong><small>我的私人运动教练</small></div></div>
     <div class="topbar-actions">
-      <span class="version-badge" id="appVersion">v1.9</span>
+      <span class="version-badge" id="appVersion">v1.10</span>
       <button id="installBtn" class="install-btn hidden" type="button">安装</button>
     </div>
   </header>
@@ -133,7 +133,7 @@
       </div>
       <div class="info-card">
         <b>版本信息</b>
-        <p>FitLog <span id="appVersionData">v1.9</span> · PWA · IndexedDB 本地存储</p>
+        <p>FitLog <span id="appVersionData">v1.10</span> · PWA · IndexedDB 本地存储</p>
         <p id="storageStatus">正在检查本地数据库……</p>
       </div>
     </section>
@@ -213,6 +213,10 @@
         <textarea id="exerciseCue" rows="2" placeholder="例如：注意背部挺直，发力时呼气，绝不憋气！"></textarea>
       </label>
 
+      <label class="inline-label">起势准备缓冲（秒，纯视频默认 10 秒，可自行修改）
+        <input id="exPrepSeconds" type="number" min="0" max="30" value="5">
+      </label>
+
       <div class="form-section-box">
         <div class="box-header-inline">
           <span class="box-title">呼吸与节拍节奏引导</span>
@@ -224,9 +228,6 @@
             <option value="squat">深蹲节奏（吸气下蹲3秒 · 停顿1秒 · 呼气站起1秒）</option>
           </select>
         </div>
-        <label class="inline-label">起势准备缓冲（秒）
-          <input id="exPrepSeconds" type="number" min="0" max="30" value="5">
-        </label>
         <div id="tempoPhaseList" class="tempo-phase-list"></div>
         <button type="button" id="addTempoPhaseBtn" class="mini-outline-btn full-width">＋ 添加呼吸/节拍阶段</button>
       </div>
@@ -332,6 +333,17 @@
     <div class="runner-controls">
       <button type="button" class="alt" id="resumeTrainingNo">放弃</button>
       <button type="button" class="main" id="resumeTrainingYes">继续训练</button>
+    </div>
+  </dialog>
+
+  <!-- 备份提醒弹窗（超过 7 天未备份时提示） -->
+  <dialog id="backupReminderDialog" class="reminder-alert-dialog">
+    <div class="ra-icon">⇩</div>
+    <div class="ra-title">该备份数据啦</div>
+    <div class="ra-text" id="backupReminderText">距离上次备份已经超过 7 天了，建议导出一次 JSON 备份。</div>
+    <div class="runner-controls">
+      <button type="button" class="alt" id="backupRemindLater">稍后再说</button>
+      <button type="button" class="main" id="backupRemindNow">立即备份</button>
     </div>
   </dialog>
 

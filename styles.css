@@ -165,7 +165,7 @@ main{max-width:760px;margin:0 auto;padding:18px 16px 28px}
 .icon-btn.light{background:#35506b;color:#fff;min-width:38px;height:38px;border-radius:10px;font-size:17px;line-height:1}
 .runner-body.is-paused{opacity:.55;filter:grayscale(.3)}
 .runner-paused-mask{position:fixed;inset:60px 0 0;z-index:3;display:flex;align-items:center;justify-content:center;background:#0f172a33;pointer-events:none}
-.rpm-card{background:#fff;border-radius:18px;padding:26px 30px;text-align:center;box-shadow:0 12px 40px #0f172a44}
+.rpm-card{background:#fff;border-radius:18px;padding:26px 30px;text-align:center;box-shadow:0 12px 40px #0f172a44;pointer-events:auto;cursor:pointer;user-select:none}
 .rpm-card b{display:block;font-size:18px;color:var(--navy);margin:6px 0}
 .rpm-card p{font-size:12px;color:var(--muted);margin:0}
 .rpm-icon{font-size:34px}
@@ -180,7 +180,7 @@ main{max-width:760px;margin:0 auto;padding:18px 16px 28px}
 /* 工作阶段：屏幕中央圆形阶段提示 */
 .phase-circle{width:min(66vw,280px);height:min(66vw,280px);border-radius:50%;margin:14px auto 16px;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 10px 26px #0f172a33;color:#fff;flex:0 0 auto}
 .phase-circle-label{font-size:clamp(96px,28vw,192px);font-weight:850;line-height:1.05;color:#0f172a;padding:0 6px;word-break:break-all;text-shadow:none;text-align:center}
-.reps-progress{font-size:18px;color:#475569;margin:-11px 0 6px}
+.reps-progress{font-size:18px;color:#475569;margin:-19px 0 6px}
 .reps-progress b{color:var(--blue);font-size:22px}
 .runner-video{width:100%;max-width:360px;max-height:175px;border-radius:14px;background:#0f172a;margin:0 auto 12px;display:block}
 .tempo-banner{background:linear-gradient(135deg,#1e3a8a,#2563eb);color:#fff;border-radius:18px;padding:14px 16px;max-width:400px;margin:10px auto 14px;box-shadow:0 8px 20px #2563eb26}

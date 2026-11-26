@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.9';
+const APP_VERSION = '1.10';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -63,6 +63,10 @@ let isLongSpeechPlaying = false;
 let speechWatchdog = null;
 let speechFinish = null;
 let speechKeepAlive = null;
+
+// 备份提醒（持久化）：记录上次导出 JSON 备份的时间戳
+const LAST_BACKUP_KEY = 'fitlog-last-backup-at';
+const BACKUP_REMIND_DAYS = 7;
 
 // 语音音色设置（持久化）
 const VOICE_SETTINGS_KEY = 'fitlog-voice-settings';
@@ -1313,7 +1317,7 @@ function setupRunnerPhase(isFirstStart = false) {
   const hasTempo = Array.isArray(exercise.tempoPhases) && exercise.tempoPhases.length > 0;
   const split = isSplitSide(exercise);
 
-  // 纯视频跟练：不计时、不计数、不休息，视频播完自动下一项（可从准备阶段过来）
+  // 纯视频跟练：准备倒计时结束后直接进入视频，不播报多余语音，自动播放并尝试全屏
   if (exercise.pureVideo && runner.phase === 'video') {
     runner.tempoIndex = 0;
     runner.completedRepsInSet = 0;
@@ -1323,14 +1327,17 @@ function setupRunnerPhase(isFirstStart = false) {
       videoEl.onended = () => {
         if (runner && runner.phase === 'video') advanceRunner();
       };
-      videoEl.play().catch(() => showToast('若视频未自动播放，请点视频上的播放按钮'));
+      videoEl.play().then(() => {
+        // 尝试自动全屏（部分浏览器需用户手势，失败则保持普通播放）
+        if (videoEl.requestFullscreen) videoEl.requestFullscreen().catch(() => {});
+        else if (videoEl.webkitEnterFullscreen) videoEl.webkitEnterFullscreen();
+      }).catch(() => showToast('若视频未自动播放，请点视频上的播放按钮'));
     } else {
       showToast('该纯视频动作没有视频，已自动跳过');
       setTimeout(() => {
         if (runner && runner.phase === 'video') advanceRunner();
       }, 900);
     }
-    speak(`纯视频跟练：${exercise.name}`, true, 'key');
     return;
   }
 
@@ -1346,7 +1353,12 @@ function setupRunnerPhase(isFirstStart = false) {
     const prefix = isFirstStart
       ? `开始训练，${runner.planName}。第一个动作，${exercise.name}。`
       : `准备动作，${exercise.name}，第${runner.setIndex}组。`;
+    // 先播开场与调整姿势提示；次数型（有节拍）紧接着在准备阶段播要领，
+    // 计时型的要领留到正式计时开始时播（避免重复），都走保护队列
     speak(`${prefix}请调整初始姿势，准备开始。`, true, 'key');
+    const isTimed = !hasTempo && exercise.type === 'time';
+    const prepCue = (exercise.cue || exercise.notes || '').trim();
+    if (prepCue && !isTimed) speak(prepCue, false, 'key');
     renderRunner();
     startCountdownLoop('prepare');
   } else if (runner.phase === 'work') {
@@ -1369,9 +1381,11 @@ function setupRunnerPhase(isFirstStart = false) {
     const sideName = split ? (runner.sideStage === 'left' ? '左侧' : '右侧') : '';
     if (hasTempo) {
       if (split) speak(`${sideName}，${exercise.name}，第${runner.setIndex}组。`, true, 'key');
+      // 非左右侧：开场与要领已在准备阶段播完，这里直接报数 1、2、3
       startTempoPhase(0);
     } else {
-      speak(`开始第${runner.setIndex}组，${sideName}${exercise.name}。`, true, 'key');
+      // 计时型动作同理：要领已在准备阶段播完，仅左右侧需要提示侧别
+      if (split) speak(`${sideName}，第${runner.setIndex}组，开始计时。`, true, 'key');
       startPlainTickLoop();
     }
   } else if (runner.phase === 'rest') {
@@ -1416,12 +1430,14 @@ function startTempoPhase(phaseIdx) {
   if (phaseIdx === 0) {
     const nextNum = runner.completedRepsInSet + 1;
     speak(String(nextNum), true, 'count');
-    // 每完成 5 次插播一次专属语音播报（数字滴声之后播）；总次数自动取动作默认目标参数
+    // 第 3 次、之后每完成 5 次插播专属语音播报（数字滴声之后播）：完成数 = 3、8、13…
+    // 例如做了 8 个，报数 9 的滴声之后播一次；总次数自动取动作默认目标参数
     const rawTarget = Number(item.target ?? exercise.defaultTarget?.target);
     const totalTarget = Number.isFinite(rawTarget) && rawTarget > 0 ? rawTarget : 0;
     const cueText = (exercise.cue || '').trim();
-    if (cueText && runner.completedRepsInSet > 0 && runner.completedRepsInSet % 5 === 0
-        && (!totalTarget || runner.completedRepsInSet < totalTarget)) {
+    const done = runner.completedRepsInSet;
+    if (cueText && done >= 3 && (done - 3) % 5 === 0
+        && (!totalTarget || done < totalTarget)) {
       speak(cueText, false, 'key');
     }
   }
@@ -1485,17 +1501,57 @@ function beginSideSwitch() {
   setupRunnerPhase(false);
 }
 
-// 无节拍动作（如平板支撑）：每秒滴一声，显示已坚持秒数，不说话
+// 无节拍计时型动作（如平板支撑）：每秒滴一声，按时间节点插播语音
 function startPlainTickLoop() {
   stopRunnerTimer();
   if (!runner || runner.phase !== 'work') return;
+  const item = currentRunnerItem();
+  const exercise = item?.exercise;
+  const targetSec = Math.max(0, Number(item?.target ?? exercise?.defaultTarget?.target ?? 0) || 0);
+  const cueText = (exercise?.cue || exercise?.notes || '').trim();
+  const isTimed = exercise?.type === 'time';
+
   runner.elapsedSec = 0;
+  runner.plainCueFired = { start: false, ten: false, half: false, left: false, done: false, lastCueSec: -1 };
+
+  // 计时型：正式开始时播一次动作要领（准备阶段已跳过，避免重复）
+  if (isTimed && cueText && !runner.plainCueFired.start) {
+    runner.plainCueFired.start = true;
+    speak(cueText, false, 'key');
+  }
+
   timerHandle = setInterval(() => {
     if (!runner || runner.phase !== 'work') { stopRunnerTimer(); return; }
     runner.elapsedSec = (runner.elapsedSec || 0) + 1;
     playTickCue();
+    const sec = runner.elapsedSec;
     const numEl = $('runnerNumber');
-    if (numEl) numEl.textContent = runner.elapsedSec;
+    if (numEl) numEl.textContent = sec;
+
+    if (!isTimed || targetSec < 2) return;
+    const fired = runner.plainCueFired;
+    const halfSec = Math.floor(targetSec / 2);
+
+    // 10 秒节点、过半节点：播专属语音播报内容（同秒只播一次）
+    const playCueOnce = () => { if (fired.lastCueSec !== sec) { fired.lastCueSec = sec; speak(cueText, false, 'key'); } };
+    if (cueText && sec >= 10 && !fired.ten && 10 < targetSec) {
+      fired.ten = true;
+      playCueOnce();
+    }
+    if (cueText && halfSec >= 2 && sec >= halfSec && !fired.half) {
+      fired.half = true;
+      playCueOnce();
+    }
+    // 剩 10 秒：播「最后10秒，坚持住」
+    if (targetSec > 10 && sec >= targetSec - 10 && !fired.left) {
+      fired.left = true;
+      speak('最后10秒，坚持住', false, 'key');
+    }
+    // 到点：提示可完成本组（不自动结束，保持手动流程）
+    if (!fired.done && sec >= targetSec) {
+      fired.done = true;
+      speak('时间到，做得好，可以点完成本组了', false, 'key');
+    }
   }, 1000);
 }
 
@@ -1728,7 +1784,9 @@ function renderRunner() {
     if (runner.paused) {
       const mask = document.createElement('div');
       mask.className = 'runner-paused-mask';
-      mask.innerHTML = `<div class="rpm-card"><div class="rpm-icon">⏸</div><b>训练已暂停</b><p>点底部 ▶ 继续训练</p></div>`;
+      mask.innerHTML = `<div class="rpm-card" id="rpmResumeCard" title="点击继续训练"><div class="rpm-icon">▶</div><b>点击继续训练</b><p>也可以点底部的 ▶ 继续</p></div>`;
+      const card = $('rpmResumeCard');
+      if (card) card.onclick = () => { if (runner && runner.paused) resumeRunner(); };
       bodyEl.insertBefore(mask, bodyEl.firstChild);
     }
   }
@@ -1985,7 +2043,22 @@ async function exportJson() {
     sessions: await getAll('sessions')
   };
   downloadFile(`fitlog-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(backup, null, 2), 'application/json');
-  showToast('JSON备份已导出');
+  try { localStorage.setItem(LAST_BACKUP_KEY, String(Date.now())); } catch (_) {}
+  showToast('JSON备份已导出到下载文件夹');
+}
+
+// 备份提醒：超过 N 天未备份则弹窗提示（备份文件保存在浏览器下载文件夹）
+function checkBackupReminder(force = false) {
+  let last = 0;
+  try { last = Number(localStorage.getItem(LAST_BACKUP_KEY)) || 0; } catch (_) {}
+  const elapsedDays = last ? (Date.now() - last) / 86400000 : Infinity;
+  if (!force && elapsedDays < BACKUP_REMIND_DAYS) return;
+  const textEl = $('backupReminderText');
+  if (textEl) {
+    if (!last) textEl.textContent = '你还没有备份过数据。导出 JSON 备份会保存在手机的下载文件夹，建议现在备份一次。';
+    else textEl.textContent = `距离上次备份已经 ${Math.floor(elapsedDays)} 天了。导出 JSON 备份会保存在手机的下载文件夹，建议现在备份一次。`;
+  }
+  openDialog('backupReminderDialog');
 }
 
 async function exportCsv() {
@@ -2310,6 +2383,14 @@ function bindEvents() {
   });
 
   $('exportJsonBtn').addEventListener('click', exportJson);
+  // 备份提醒弹窗
+  const backupLaterBtn = $('backupRemindLater');
+  if (backupLaterBtn) backupLaterBtn.addEventListener('click', () => closeDialog('backupReminderDialog'));
+  const backupNowBtn = $('backupRemindNow');
+  if (backupNowBtn) backupNowBtn.addEventListener('click', async () => {
+    closeDialog('backupReminderDialog');
+    await exportJson();
+  });
   $('exportCsvBtn').addEventListener('click', exportCsv);
   $('btnDeepseekExport').addEventListener('click', exportDeepseek);
   $('importJsonInput').addEventListener('change', event => importJson(event.target.files?.[0]));
@@ -2456,13 +2537,15 @@ async function init() {
     restoreSavedPage();
     $('storageStatus').textContent = '本地数据库已连接。';
 
-    // 若存在未完成的训练快照，询问是否继续
+    // 若存在未完成的训练快照，询问是否继续；否则检查是否需要备份提醒
     const snap = loadRunnerSnapshot();
     if (snap) {
       const pausedAt = snap.pausedAt ? new Date(snap.pausedAt).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
       const infoEl = $('resumeTrainingText');
       if (infoEl) infoEl.textContent = `“${snap.planName || '上次课程'}”尚未完成${pausedAt ? `（暂停于 ${pausedAt}）` : ''}，是否继续？`;
       openDialog('resumeTrainingDialog');
+    } else {
+      setTimeout(() => checkBackupReminder(), 600);
     }
   } catch (error) {
     console.error(error);
