@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.12';
+const APP_VERSION = '1.13';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -294,9 +294,11 @@ function speak(text, interrupt = false, kind = 'info') {
   if (voiceSettings.mode === 'beep') return;
   if (voiceSettings.mode === 'count' && kind === 'info') return;
 
-  // 长句（动作要领/专属播报）正在播时，报数只保留滴声节奏，不排队补播。
-  // 否则长句结束后会把期间积压的数字一次性快速吐出来，出现「6、7、8、9」连读。
+  // 长句（动作要领/专属播报）正在播时，报数照常排队但按正常间隔补播，
+  // 既不丢数字（不跳号），也不会一次性快速吐出（不连读）。只保留最近 4 个避免严重滞后。
   if (kind === 'count' && isLongSpeechPlaying) {
+    speechQueue.push({ text: str, kind });
+    trimDeferredCounts();
     return;
   }
   // 长句之间才允许打断旧的；报数永不打断当前播报
@@ -313,6 +315,18 @@ function trimSpeechQueue() {
     if (idx < 0) idx = speechQueue.findIndex(q => q.kind === 'key');
     if (idx < 0) idx = 0;
     speechQueue.splice(idx, 1);
+  }
+}
+
+// 播报期间积压的报数最多保留最近 4 个：播报结束后按顺序、按节奏补播，
+// 既不会跳号，也不会因积压太多而一口气连读/严重滞后
+function trimDeferredCounts() {
+  const counts = speechQueue.filter(q => q.kind === 'count');
+  if (counts.length > 4) {
+    const drop = new Set(counts.slice(0, counts.length - 4));
+    for (let i = speechQueue.length - 1; i >= 0; i--) {
+      if (drop.has(speechQueue[i])) speechQueue.splice(i, 1);
+    }
   }
 }
 
@@ -339,7 +353,11 @@ function processSpeechQueue() {
     isLongSpeechPlaying = false;
     if (speechKeepAlive) clearInterval(speechKeepAlive);
     speechKeepAlive = null;
-    setTimeout(processSpeechQueue, 60);
+    // 补播报数时留出正常间隔，避免长句结束后积压的数字连成一串；
+    // 长句→报数或普通衔接保持紧凑
+    const nextIsCount = speechQueue.length && speechQueue[0].kind === 'count';
+    const gap = (item.kind === 'count' && nextIsCount) ? 420 : 60;
+    setTimeout(processSpeechQueue, gap);
   };
 
   let utterance;
