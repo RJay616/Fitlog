@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.10';
+const APP_VERSION = '1.11';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -257,6 +257,20 @@ function pickPreferredVoice() {
   return pool.slice().sort((a, b) => maleVoiceScore(b) - maleVoiceScore(a))[0] || null;
 }
 
+// 把长要领按中文标点拆成短句，降低安卓长文本 TTS 被系统回收的概率
+function splitIntoSentences(text) {
+  const s = String(text || '').trim();
+  if (!s) return [];
+  const parts = [];
+  let buf = '';
+  for (const ch of s) {
+    buf += ch;
+    if ('。！？!?；;'.includes(ch)) { parts.push(buf.trim()); buf = ''; }
+  }
+  if (buf.trim()) parts.push(buf.trim());
+  return parts.length ? parts : [s];
+}
+
 function cancelSpeech() {
   if ('speechSynthesis' in window) {
     try { window.speechSynthesis.cancel(); } catch (_) {}
@@ -376,6 +390,23 @@ if ('speechSynthesis' in window) {
 }
 
 /* ===================== 视频声音清理 ===================== */
+// 纯视频跟练：进入正式跟练时请求全屏，多种方式依次尝试以兼容安卓/iOS
+function enterVideoFullscreen(videoEl) {
+  if (!videoEl) return;
+  try {
+    if (typeof videoEl.webkitEnterFullscreen === 'function') {
+      videoEl.webkitEnterFullscreen();
+      return;
+    }
+  } catch (_) {}
+  try {
+    if (typeof videoEl.requestFullscreen === 'function') {
+      const p = videoEl.requestFullscreen();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    }
+  } catch (_) {}
+}
+
 function pauseAllVideos() {
   document.querySelectorAll('video').forEach(video => {
     try { video.pause(); } catch (_) {}
@@ -1327,10 +1358,12 @@ function setupRunnerPhase(isFirstStart = false) {
       videoEl.onended = () => {
         if (runner && runner.phase === 'video') advanceRunner();
       };
+      // 正式跟练阶段取消静音，确保视频有声音
+      videoEl.muted = false;
       videoEl.play().then(() => {
-        // 尝试自动全屏（部分浏览器需用户手势，失败则保持普通播放）
-        if (videoEl.requestFullscreen) videoEl.requestFullscreen().catch(() => {});
-        else if (videoEl.webkitEnterFullscreen) videoEl.webkitEnterFullscreen();
+        // 立即 + 延迟各尝试一次全屏：部分安卓浏览器在 play() 完成后才允许全屏
+        enterVideoFullscreen(videoEl);
+        setTimeout(() => enterVideoFullscreen(videoEl), 350);
       }).catch(() => showToast('若视频未自动播放，请点视频上的播放按钮'));
     } else {
       showToast('该纯视频动作没有视频，已自动跳过');
@@ -1350,18 +1383,21 @@ function setupRunnerPhase(isFirstStart = false) {
     runner.rightDone = null;
     if (split) { runner.sideStage = 'left'; runner.enterSideRight = false; }
     else runner.sideStage = null;
-    const prefix = isFirstStart
-      ? `开始训练，${runner.planName}。第一个动作，${exercise.name}。`
-      : `准备动作，${exercise.name}，第${runner.setIndex}组。`;
-    // 先播开场与调整姿势提示；次数型（有节拍）紧接着在准备阶段播要领，
-    // 计时型的要领留到正式计时开始时播（避免重复），都走保护队列
-    speak(`${prefix}请调整初始姿势，准备开始。`, true, 'key');
-    const isTimed = !hasTempo && exercise.type === 'time';
-    const prepCue = (exercise.cue || exercise.notes || '').trim();
-    if (prepCue && !isTimed) speak(prepCue, false, 'key');
+    // 起势准备阶段只念一次「动作要领」（notes，缺省时用 cue），并先清空旧队列。
+    // 不再播计划名/动作名/组数等冗长开场，避免要领被拖到进入动作之后才念；
+    // 次数型与计时型统一在此念要领，进入动作后一律直接报数，不再念长句。
+    cancelSpeech();
+    const leadText = (exercise.notes || exercise.cue || '').trim();
+    const leadParts = splitIntoSentences(leadText);
+    if (leadParts.length) {
+      // 逐句播（每句独立入队），避免单条超长文本被安卓系统回收、中途“没声音”
+      leadParts.forEach((part, idx) => speak(part, idx === 0, 'key'));
+    }
     renderRunner();
     startCountdownLoop('prepare');
   } else if (runner.phase === 'work') {
+    // 进入动作前清空准备阶段残留的要领队列，保证动作一开始就直接报 1、2、3
+    cancelSpeech();
     runner.tempoIndex = 0;
     runner.completedRepsInSet = 0;
     runner.elapsedSec = 0;
@@ -1508,17 +1544,12 @@ function startPlainTickLoop() {
   const item = currentRunnerItem();
   const exercise = item?.exercise;
   const targetSec = Math.max(0, Number(item?.target ?? exercise?.defaultTarget?.target ?? 0) || 0);
-  const cueText = (exercise?.cue || exercise?.notes || '').trim();
+  // 动作要领已在起势准备阶段念完；这里只播「专属语音播报」内容，不再混入 notes 或重复播
+  const cueText = (exercise?.cue || '').trim();
   const isTimed = exercise?.type === 'time';
 
   runner.elapsedSec = 0;
-  runner.plainCueFired = { start: false, ten: false, half: false, left: false, done: false, lastCueSec: -1 };
-
-  // 计时型：正式开始时播一次动作要领（准备阶段已跳过，避免重复）
-  if (isTimed && cueText && !runner.plainCueFired.start) {
-    runner.plainCueFired.start = true;
-    speak(cueText, false, 'key');
-  }
+  runner.plainCueFired = { ten: false, half: false, left: false, done: false, lastCueSec: -1 };
 
   timerHandle = setInterval(() => {
     if (!runner || runner.phase !== 'work') { stopRunnerTimer(); return; }
@@ -1532,7 +1563,7 @@ function startPlainTickLoop() {
     const fired = runner.plainCueFired;
     const halfSec = Math.floor(targetSec / 2);
 
-    // 10 秒节点、过半节点：播专属语音播报内容（同秒只播一次）
+    // 10 秒节点、过半节点：各播一次专属语音播报内容（同一秒只播一次，避免重复）
     const playCueOnce = () => { if (fired.lastCueSec !== sec) { fired.lastCueSec = sec; speak(cueText, false, 'key'); } };
     if (cueText && sec >= 10 && !fired.ten && 10 < targetSec) {
       fired.ten = true;
@@ -1618,9 +1649,11 @@ function renderRunner() {
     videoSrc = exercise.videoUrl;
   }
   const isPureVideo = Boolean(exercise.pureVideo);
+  // 纯视频在「起势准备」阶段保持静音，只做预览；进入正式跟练（video 阶段）时再解除静音
+  const pureVideoMuted = isPureVideo && runner.phase === 'prepare' ? ' muted' : '';
   const videoHtml = videoSrc
     ? isPureVideo
-      ? `<video id="runnerVideo" class="runner-video" src="${escapeHtml(videoSrc)}" autoplay playsinline controls></video>`
+      ? `<video id="runnerVideo" class="runner-video" src="${escapeHtml(videoSrc)}" autoplay${pureVideoMuted} playsinline controls></video>`
       : `<video id="runnerVideo" class="runner-video" src="${escapeHtml(videoSrc)}" autoplay loop muted playsinline controls></video>`
     : '';
 
@@ -1784,10 +1817,11 @@ function renderRunner() {
     if (runner.paused) {
       const mask = document.createElement('div');
       mask.className = 'runner-paused-mask';
-      mask.innerHTML = `<div class="rpm-card" id="rpmResumeCard" title="点击继续训练"><div class="rpm-icon">▶</div><b>点击继续训练</b><p>也可以点底部的 ▶ 继续</p></div>`;
-      const card = $('rpmResumeCard');
-      if (card) card.onclick = () => { if (runner && runner.paused) resumeRunner(); };
+      mask.innerHTML = `<div class="rpm-card" id="rpmResumeCard" title="点击继续训练"><div class="rpm-icon">▶</div><b>点击继续训练</b><p>点击此图标或底部 ▶ 均可继续</p></div>`;
+      // 必须先插入 DOM 再绑定事件；否则 getElementById 取不到，点击会毫无反应
       bodyEl.insertBefore(mask, bodyEl.firstChild);
+      const card = mask.querySelector('#rpmResumeCard');
+      if (card) card.onclick = () => { if (runner && runner.paused) resumeRunner(); };
     }
   }
 }
