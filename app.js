@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.11';
+const APP_VERSION = '1.12';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -294,10 +294,9 @@ function speak(text, interrupt = false, kind = 'info') {
   if (voiceSettings.mode === 'beep') return;
   if (voiceSettings.mode === 'count' && kind === 'info') return;
 
-  // 报数遇到长句正在播：保护长句，报数只排队不打断（滴声照常由调用方发出）
+  // 长句（动作要领/专属播报）正在播时，报数只保留滴声节奏，不排队补播。
+  // 否则长句结束后会把期间积压的数字一次性快速吐出来，出现「6、7、8、9」连读。
   if (kind === 'count' && isLongSpeechPlaying) {
-    speechQueue.push({ text: str, kind });
-    trimSpeechQueue();
     return;
   }
   // 长句之间才允许打断旧的；报数永不打断当前播报
@@ -390,19 +389,34 @@ if ('speechSynthesis' in window) {
 }
 
 /* ===================== 视频声音清理 ===================== */
-// 纯视频跟练：进入正式跟练时请求全屏，多种方式依次尝试以兼容安卓/iOS
+// 纯视频跟练：进入正式跟练时请求全屏。
+// 注意：多种方式都要尝试，旧版在 webkitEnterFullscreen 存在时直接 return，
+// 导致安卓上这个方法静默失败时不再走标准的 requestFullscreen，全屏就没生效。
+function isVideoFullscreen(videoEl) {
+  try {
+    if (document.fullscreenElement || document.webkitFullscreenElement) return true;
+    if (videoEl && videoEl.webkitDisplayingFullscreen) return true;
+  } catch (_) {}
+  return false;
+}
 function enterVideoFullscreen(videoEl) {
   if (!videoEl) return;
+  if (isVideoFullscreen(videoEl)) return;
+  // 方式一：视频原生全屏（iOS Safari / 部分安卓 WebView，对 video 元素最有效）
   try {
-    if (typeof videoEl.webkitEnterFullscreen === 'function') {
-      videoEl.webkitEnterFullscreen();
-      return;
-    }
+    if (typeof videoEl.webkitEnterFullscreen === 'function') videoEl.webkitEnterFullscreen();
   } catch (_) {}
+  // 方式二：标准全屏 API（安卓 Chrome 主用），不因方式一失败而跳过
   try {
-    if (typeof videoEl.requestFullscreen === 'function') {
+    if (!isVideoFullscreen(videoEl) && typeof videoEl.requestFullscreen === 'function') {
       const p = videoEl.requestFullscreen();
       if (p && typeof p.catch === 'function') p.catch(() => {});
+    }
+  } catch (_) {}
+  // 方式三：ms 前缀兼容
+  try {
+    if (!isVideoFullscreen(videoEl) && typeof videoEl.msRequestFullscreen === 'function') {
+      videoEl.msRequestFullscreen();
     }
   } catch (_) {}
 }
@@ -1360,8 +1374,15 @@ function setupRunnerPhase(isFirstStart = false) {
       };
       // 正式跟练阶段取消静音，确保视频有声音
       videoEl.muted = false;
+      // 视频真正开始播放时（已有用户手势上下文）再尝试全屏，成功率最高
+      videoEl.addEventListener('playing', () => {
+        enterVideoFullscreen(videoEl);
+        setTimeout(() => enterVideoFullscreen(videoEl), 200);
+        setTimeout(() => enterVideoFullscreen(videoEl), 600);
+      }, { once: true });
+      // 点击视频本身也可进入全屏（浏览器拒绝自动全屏时的兜底）
+      videoEl.addEventListener('click', () => enterVideoFullscreen(videoEl));
       videoEl.play().then(() => {
-        // 立即 + 延迟各尝试一次全屏：部分安卓浏览器在 play() 完成后才允许全屏
         enterVideoFullscreen(videoEl);
         setTimeout(() => enterVideoFullscreen(videoEl), 350);
       }).catch(() => showToast('若视频未自动播放，请点视频上的播放按钮'));
@@ -1731,7 +1752,7 @@ function renderRunner() {
   $('runnerBody').innerHTML = `
     <div class="runner-kicker">动作 ${runner.index + 1} / ${runner.items.length} · ${isPureVideo ? '纯视频跟练（暂不统计）' : `第 ${runner.setIndex} / ${item.sets} 组（目标 ${item.target}${exercise.type === 'time' ? '秒' : '次'}）`}</div>
     <h2>${sideBadge}${escapeHtml(exercise.name)}</h2>
-    ${exercise.cue ? `<p class="runner-cue">💡 ${escapeHtml(exercise.cue)}</p>` : ''}
+    ${(exercise.notes || exercise.cue) ? `<p class="runner-cue">💡 ${escapeHtml(exercise.notes || exercise.cue)}</p>` : ''}
     ${videoHtml}
     ${bannerHtml}
     ${centerHtml}
