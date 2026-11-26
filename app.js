@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.6';
+const APP_VERSION = '1.7';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -1368,6 +1368,15 @@ function setupRunnerPhase(isFirstStart = false) {
   }
 }
 
+// 同步更新彩色圆内数字与 1.4 风格倒计时数字（两处同时刷新）
+function updateTempoNumber() {
+  const val = Math.max(0, runner?.tempoSecLeft || 0);
+  const main = $('runnerNumber');
+  if (main) main.textContent = val;
+  const circle = $('runnerNumberCircle');
+  if (circle) circle.textContent = val;
+}
+
 // 简洁节拍：每秒滴一声掌握节奏；一次动作开始前只报纯数字（1、2、3…）
 // 达到目标次数后自动进入休息 → 自动下一组 / 下一动作；左右侧动作按左→切换→右分步
 function startTempoPhase(phaseIdx) {
@@ -1396,8 +1405,7 @@ function startTempoPhase(phaseIdx) {
     }
     runner.tempoSecLeft -= 1;
     playTickCue(); // 每秒一声轻滴
-    const numEl = $('runnerNumber');
-    if (numEl) numEl.textContent = Math.max(0, runner.tempoSecLeft);
+    updateTempoNumber();
 
     if (runner.tempoSecLeft > 0) return;
 
@@ -1536,7 +1544,7 @@ function renderRunner() {
     ? `<span class="side-badge">${runner.sideStage === 'right' ? '右侧' : '左侧'}</span>`
     : '';
 
-  // 工作阶段（有节拍）：屏幕中央圆形，背景=阶段自定义颜色，文字白色；描述字号约为数字两倍
+  // 工作阶段（有节拍）：上方彩色圆（描述大字+圆内数字），下方 1.4 风格倒计时区（数字两边暂停/停止）
   let centerHtml = '';
   if (runner.phase === 'work' && currentPhase) {
     const color = /^#[0-9a-f]{6}$/i.test(currentPhase.color || '') ? currentPhase.color : PHASE_COLOR.other;
@@ -1544,7 +1552,15 @@ function renderRunner() {
     centerHtml = `
       <div class="phase-circle" style="background:${color}">
         <div class="phase-circle-label">${escapeHtml(descText)}</div>
-        <div class="phase-circle-count" id="runnerNumber">${Math.max(0, runner.tempoSecLeft)}</div>
+        <div class="phase-circle-count" id="runnerNumberCircle">${Math.max(0, runner.tempoSecLeft)}</div>
+      </div>
+      <div class="tempo-banner work-countdown">
+        <div class="tempo-phase-title">当前节拍倒计时</div>
+        <div class="work-countdown-row">
+          <button type="button" class="cd-side-btn cd-pause" id="workPauseBtn" title="暂停/继续">⏸</button>
+          <div class="runner-number" id="runnerNumber">${Math.max(0, runner.tempoSecLeft)}</div>
+          <button type="button" class="cd-side-btn cd-stop" id="workStopBtn" title="结束训练">⏹</button>
+        </div>
       </div>
       <div class="reps-progress">已完成 <b id="repsDone">${runner.completedRepsInSet}</b> / ${item.target || exercise.defaultTarget?.target || '—'} 次${split ? ` · ${runner.sideStage === 'right' ? '右侧' : '左侧'}` : ''}</div>
     `;
@@ -1622,6 +1638,23 @@ function renderRunner() {
   } else if (runner.phase === 'work') {
     if ($('runnerCueBtn')) $('runnerCueBtn').onclick = () => speak(exercise.cue || exercise.notes || exercise.name, true, 'key');
     if ($('completeSetBtn')) $('completeSetBtn').onclick = completeSet;
+    // 有节拍时：1.4 倒计时区两侧的暂停/停止按钮
+    if ($('workPauseBtn')) {
+      $('workPauseBtn').textContent = runner.paused ? '▶' : '⏸';
+      $('workPauseBtn').onclick = () => {
+        if (runner.paused) resumeRunner(); else pauseRunner();
+        const top = $('runnerPauseBtn');
+        if (top) { top.textContent = runner.paused ? '▶' : '⏸'; top.title = runner.paused ? '继续训练' : '暂停训练'; }
+        $('workPauseBtn').textContent = runner.paused ? '▶' : '⏸';
+      };
+    }
+    if ($('workStopBtn')) $('workStopBtn').onclick = () => {
+      const doneSets = runner.session?.exercises?.length || 0;
+      if (confirm(doneSets > 0 ? `确定结束本次训练吗？已完成的 ${doneSets} 组会保存。` : '确定结束本次训练吗？尚未完成任何组，本次不保存记录。')) {
+        clearRunnerSnapshot();
+        finishSession();
+      }
+    };
   } else if (runner.phase === 'video') {
     $('nextVideoBtn').onclick = () => advanceRunner();
     $('replayVideoBtn').onclick = () => {

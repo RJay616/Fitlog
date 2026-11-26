@@ -178,9 +178,9 @@ main{max-width:760px;margin:0 auto;padding:18px 16px 28px}
 .side-badge{font-size:13px;color:#fff;background:#0f766e;border-radius:999px;padding:3px 12px;font-weight:800;letter-spacing:1px}
 
 /* 工作阶段：屏幕中央圆形阶段提示 */
-.phase-circle{width:min(88vw,380px);height:min(88vw,380px);border-radius:50%;margin:14px auto 12px;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 12px 34px #0f172a33;color:#fff;flex:0 0 auto}
-.phase-circle-label{font-size:clamp(56px,15vw,108px);font-weight:850;line-height:1.12;color:#fff;padding:0 16px;word-break:break-word;text-shadow:0 2px 6px #00000033}
-.phase-circle-count{font-size:54px;font-weight:850;color:#fff;margin-top:6px;font-variant-numeric:tabular-nums;opacity:.98}
+.phase-circle{width:min(33vw,140px);height:min(33vw,140px);border-radius:50%;margin:8px auto 10px;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 10px 26px #0f172a33;color:#fff;flex:0 0 auto}
+.phase-circle-label{font-size:clamp(22px,6.4vw,32px);font-weight:850;line-height:1.15;color:#fff;padding:0 8px;word-break:break-word;text-shadow:0 2px 6px #00000033;text-align:center}
+.phase-circle-count{font-size:clamp(20px,5.4vw,28px);font-weight:800;color:#fff;margin-top:3px;font-variant-numeric:tabular-nums;opacity:.98}
 .reps-progress{font-size:16px;color:#475569;margin:2px 0 6px}
 .reps-progress b{color:var(--blue);font-size:20px}
 .runner-video{width:100%;max-width:360px;max-height:175px;border-radius:14px;background:#0f172a;margin:0 auto 12px;display:block}
@@ -189,6 +189,13 @@ main{max-width:760px;margin:0 auto;padding:18px 16px 28px}
 .tempo-banner.prep-mode{background:linear-gradient(135deg,#b45309,#f59e0b)}
 .tempo-phase-title{font-size:18px;font-weight:800;margin-bottom:4px}
 .tempo-phase-sub{font-size:12px;opacity:.9}
+/* 运动过程中 1.4 风格倒计时区：蓝底横幅 + 深蓝大数字，两侧暂停(黄)/停止(红) */
+.tempo-banner.work-countdown{background:linear-gradient(135deg,#1e3a8a,#2563eb);margin:6px auto 12px;padding:10px 14px 12px}
+.work-countdown-row{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:4px}
+.work-countdown-row .runner-number{font-size:54px;line-height:1.05;margin:0;min-width:76px;text-align:center;color:#fff}
+.cd-side-btn{border:0;border-radius:14px;width:66px;height:66px;font-size:26px;font-weight:800;color:#fff;cursor:pointer;box-shadow:0 4px 12px #0f172a33}
+.cd-pause{background:#f59e0b}
+.cd-stop{background:#ef4444}
 .runner-number{font-size:54px;line-height:1.15;font-weight:850;color:var(--navy);font-variant-numeric:tabular-nums;margin:10px 0}
 .runner-label{font-size:12px;color:var(--muted)}
 .runner-controls{display:flex;justify-content:center;gap:9px;flex-wrap:wrap;margin-top:16px}
