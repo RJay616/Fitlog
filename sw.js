@@ -1,5 +1,5 @@
 // 版本规范：1.1、1.2 小迭代；2.1 起为大改版
-const CACHE_VERSION = '1.7';
+const CACHE_VERSION = '1.4.1';
 const CACHE_NAME = `fitlog-v${CACHE_VERSION}-cache`;
 const APP_FILES = [
   './',
