@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.8';
+const APP_VERSION = '1.9';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -59,6 +59,7 @@ let audioCtx = null;
 let audioUnlocked = false;
 const speechQueue = [];
 let isSpeaking = false;
+let isLongSpeechPlaying = false;
 let speechWatchdog = null;
 let speechFinish = null;
 let speechKeepAlive = null;
@@ -263,23 +264,39 @@ function cancelSpeech() {
   speechKeepAlive = null;
   speechQueue.length = 0;
   isSpeaking = false;
+  isLongSpeechPlaying = false;
 }
 
 // kind: info=长句说明 / count=报数 / key=关键提示
+// 保护式队列（方案A）：长句(key/info)正在播时，报数(count)不打断，只入队等长句播完再补播
 function speak(text, interrupt = false, kind = 'info') {
   if (!text) return;
   const str = String(text);
   // 语音模式过滤：beep 完全不说话，count 只说报数与关键提示
   if (voiceSettings.mode === 'beep') return;
   if (voiceSettings.mode === 'count' && kind === 'info') return;
-  if (interrupt) cancelSpeech();
-  speechQueue.push({ text: str, kind });
-  // 队列过长时丢弃最旧的普通说明，避免越积越多导致断续
-  while (speechQueue.length > 6) {
-    const idx = speechQueue.findIndex(q => q.kind === 'info');
-    speechQueue.splice(idx >= 0 ? idx : 0, 1);
+
+  // 报数遇到长句正在播：保护长句，报数只排队不打断（滴声照常由调用方发出）
+  if (kind === 'count' && isLongSpeechPlaying) {
+    speechQueue.push({ text: str, kind });
+    trimSpeechQueue();
+    return;
   }
+  // 长句之间才允许打断旧的；报数永不打断当前播报
+  if (interrupt && kind !== 'count') cancelSpeech();
+  speechQueue.push({ text: str, kind });
+  trimSpeechQueue();
   processSpeechQueue();
+}
+
+// 队列过长时优先丢弃最旧的普通说明，其次关键提示，尽量保住报数
+function trimSpeechQueue() {
+  while (speechQueue.length > 10) {
+    let idx = speechQueue.findIndex(q => q.kind === 'info');
+    if (idx < 0) idx = speechQueue.findIndex(q => q.kind === 'key');
+    if (idx < 0) idx = 0;
+    speechQueue.splice(idx, 1);
+  }
 }
 
 // 报数：提示音始终响（即使静音模式也听得见节奏），语音按模式决定
@@ -302,6 +319,7 @@ function processSpeechQueue() {
     speechWatchdog = null;
     speechFinish = null;
     isSpeaking = false;
+    isLongSpeechPlaying = false;
     if (speechKeepAlive) clearInterval(speechKeepAlive);
     speechKeepAlive = null;
     setTimeout(processSpeechQueue, 60);
@@ -320,6 +338,7 @@ function processSpeechQueue() {
   utterance.onerror = finish;
 
   isSpeaking = true;
+  isLongSpeechPlaying = item.kind !== 'count';
   speechFinish = finish;
   // 安卓 Chrome 长文本容易被系统回收暂停，定时 resume 保活
   if (speechKeepAlive) clearInterval(speechKeepAlive);
@@ -332,7 +351,10 @@ function processSpeechQueue() {
     } catch (_) {}
   }, 6000);
 
-  const estimatedMs = Math.min(12000, 1200 + text.length * 300);
+  // 长句放宽超时（按每字 ~420ms + 3秒缓冲，上限 30 秒），避免念得慢被误掐断；报数保持紧凑
+  const estimatedMs = item.kind === 'count'
+    ? Math.min(5000, 1200 + text.length * 300)
+    : Math.min(30000, 3000 + text.length * 420);
   speechWatchdog = setTimeout(() => {
     try { window.speechSynthesis.cancel(); } catch (_) {}
     if (speechFinish) speechFinish();
@@ -692,9 +714,16 @@ function setVideoPreviewSrc(src) {
 
 function applyPureVideoMode() {
   const isPure = Boolean($('exercisePureVideo')?.checked);
+  // 纯视频默认 10 秒、普通默认 5 秒；仅当当前仍是另一模式的默认值时才自动切换
+  const prepEl = $('exPrepSeconds');
+  if (prepEl) {
+    const v = clampInt(prepEl.value, 0, 30, 5);
+    if (isPure && v === 5) prepEl.value = 10;
+    else if (!isPure && v === 10) prepEl.value = 5;
+  }
   const ids = [
     'exerciseType', 'exerciseLeftRight', 'exDefaultSets', 'exDefaultTarget', 'exDefaultWeight',
-    'exDefaultRest', 'exPrepSeconds', 'tempoPresetSelect', 'addTempoPhaseBtn',
+    'exDefaultRest', 'tempoPresetSelect', 'addTempoPhaseBtn',
     'exerciseNotes', 'exerciseCue'
   ];
   ids.forEach(id => {
@@ -764,8 +793,9 @@ async function openExerciseEditor(exercise = null) {
 
   $('exerciseNotes').value = exercise?.notes || '';
   $('exerciseCue').value = exercise?.cue || '';
-  $('exPrepSeconds').value = exercise?.prepSeconds ?? 5;
-  $('exercisePureVideo').checked = Boolean(exercise?.pureVideo);
+  const pureVideo = Boolean(exercise?.pureVideo);
+  $('exercisePureVideo').checked = pureVideo;
+  $('exPrepSeconds').value = exercise?.prepSeconds ?? (pureVideo ? 10 : 5);
   applyPureVideoMode();
   $('tempoPresetSelect').value = '';
   renderTempoPhaseEditor(exercise?.tempoPhases || []);
@@ -1234,7 +1264,7 @@ async function startPlan(id) {
 
   const firstEx = items[0].exercise;
   const firstPure = Boolean(firstEx.pureVideo);
-  const prepSec = clampInt(firstEx.prepSeconds, 0, 30, 5);
+  const prepSec = clampInt(firstEx.prepSeconds, 0, 30, firstPure ? 10 : 5);
   runner = {
     planId: plan.id,
     planName: plan.name,
@@ -1250,8 +1280,8 @@ async function startPlan(id) {
       durationSeconds: 0,
       exercises: []
     },
-    phase: firstPure ? 'video' : (prepSec > 0 ? 'prepare' : 'work'),
-    remaining: firstPure ? 0 : (prepSec > 0 ? prepSec : 0),
+    phase: prepSec > 0 ? 'prepare' : (firstPure ? 'video' : 'work'),
+    remaining: prepSec > 0 ? prepSec : 0,
     // 节拍状态
     tempoIndex: 0,
     tempoSecLeft: 0,
@@ -1283,9 +1313,8 @@ function setupRunnerPhase(isFirstStart = false) {
   const hasTempo = Array.isArray(exercise.tempoPhases) && exercise.tempoPhases.length > 0;
   const split = isSplitSide(exercise);
 
-  // 纯视频跟练：不计时、不计数、不休息，视频播完自动下一项
-  if (exercise.pureVideo) {
-    runner.phase = 'video';
+  // 纯视频跟练：不计时、不计数、不休息，视频播完自动下一项（可从准备阶段过来）
+  if (exercise.pureVideo && runner.phase === 'video') {
     runner.tempoIndex = 0;
     runner.completedRepsInSet = 0;
     renderRunner();
@@ -1305,8 +1334,9 @@ function setupRunnerPhase(isFirstStart = false) {
     return;
   }
 
+  // 起势准备缓冲（纯视频动作同样适用，默认 10 秒）
   if (runner.phase === 'prepare') {
-    const prepSec = clampInt(exercise.prepSeconds, 0, 30, 5);
+    const prepSec = clampInt(exercise.prepSeconds, 0, 30, exercise.pureVideo ? 10 : 5);
     runner.remaining = prepSec;
     runner.completedRepsInSet = 0;
     runner.leftDone = null;
@@ -1384,7 +1414,16 @@ function startTempoPhase(phaseIdx) {
 
   // 一次动作开始前：只报数字，不说“第几个”
   if (phaseIdx === 0) {
-    speak(String(runner.completedRepsInSet + 1), true, 'count');
+    const nextNum = runner.completedRepsInSet + 1;
+    speak(String(nextNum), true, 'count');
+    // 每完成 5 次插播一次专属语音播报（数字滴声之后播）；总次数自动取动作默认目标参数
+    const rawTarget = Number(item.target ?? exercise.defaultTarget?.target);
+    const totalTarget = Number.isFinite(rawTarget) && rawTarget > 0 ? rawTarget : 0;
+    const cueText = (exercise.cue || '').trim();
+    if (cueText && runner.completedRepsInSet > 0 && runner.completedRepsInSet % 5 === 0
+        && (!totalTarget || runner.completedRepsInSet < totalTarget)) {
+      speak(cueText, false, 'key');
+    }
   }
 
   renderRunner();
@@ -1481,7 +1520,8 @@ function startCountdownLoop(mode) {
     if (runner.remaining <= 0) {
       stopRunnerTimer();
       if (mode === 'prepare') {
-        runner.phase = 'work';
+        const curEx = currentRunnerItem()?.exercise;
+        runner.phase = curEx?.pureVideo ? 'video' : 'work';
         setupRunnerPhase(false);
       } else if (mode === 'rest') {
         playRestEndCue();
@@ -1633,7 +1673,7 @@ function renderRunner() {
 
   if (runner.phase === 'prepare') {
     $('skipPrepareBtn').onclick = () => {
-      runner.phase = 'work';
+      runner.phase = exercise.pureVideo ? 'video' : 'work';
       setupRunnerPhase(false);
     };
   } else if (runner.phase === 'work') {
@@ -1688,7 +1728,7 @@ function renderRunner() {
     if (runner.paused) {
       const mask = document.createElement('div');
       mask.className = 'runner-paused-mask';
-      mask.innerHTML = `<div class="rpm-card"><div class="rpm-icon">⏸</div><b>训练已暂停</b><p>点右上角 ▶ 继续训练</p></div>`;
+      mask.innerHTML = `<div class="rpm-card"><div class="rpm-icon">⏸</div><b>训练已暂停</b><p>点底部 ▶ 继续训练</p></div>`;
       bodyEl.insertBefore(mask, bodyEl.firstChild);
     }
   }
@@ -1804,7 +1844,10 @@ function applyPendingAdvance() {
   if (target) {
     runner.index = target.index;
     runner.setIndex = target.setIndex;
-    runner.phase = runner.items[target.index].exercise.pureVideo ? 'video' : 'prepare';
+    const nextEx = runner.items[target.index].exercise;
+    const prep = clampInt(nextEx.prepSeconds, 0, 30, nextEx.pureVideo ? 10 : 5);
+    runner.phase = prep > 0 ? 'prepare' : (nextEx.pureVideo ? 'video' : 'work');
+    runner.remaining = prep > 0 ? prep : 0;
     setupRunnerPhase(false);
   } else {
     advanceRunner();
@@ -1837,7 +1880,9 @@ function advanceRunner() {
 
   runner.index = next.index;
   runner.setIndex = next.setIndex;
-  runner.phase = nextExercise.pureVideo ? 'video' : 'prepare';
+  const prep = clampInt(nextExercise.prepSeconds, 0, 30, nextExercise.pureVideo ? 10 : 5);
+  runner.phase = prep > 0 ? 'prepare' : (nextExercise.pureVideo ? 'video' : 'work');
+  runner.remaining = prep > 0 ? prep : 0;
   setupRunnerPhase(false);
 }
 
