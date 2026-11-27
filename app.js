@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.22';
+const APP_VERSION = '1.23';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -255,7 +255,8 @@ async function saveMoodNoteFromDialog() {
   if (!content) { showToast('写点内容再保存吧'); return; }
   await put('moodNotes', { id: makeId(), content, createdAt: nowIso() });
   input.value = '';
-  showToast('已保存，保存时间已自动记录');
+  closeDialog('moodDialog');
+  showToast('已保存，返回主界面');
 }
 
 async function renderMoodHistory() {
@@ -283,6 +284,11 @@ async function exportMoodNotes() {
 
 function showToast(message) {
   const toast = $('toast');
+  // 原生 dialog 处于浏览器顶层(top layer)，普通 z-index 无法盖住它。
+  // 若有打开的弹窗，把提示临时挂到该弹窗内部，确保提示显示在画面最前面。
+  const openDialog = document.querySelector('dialog[open]');
+  const host = openDialog || document.body;
+  if (toast.parentElement !== host) host.appendChild(toast);
   toast.textContent = message;
   toast.classList.add('show');
   clearTimeout(toastTimer);
@@ -2882,7 +2888,7 @@ function bindEvents() {
   $('saveMoodBtn').addEventListener('click', saveMoodNoteFromDialog);
   $('viewMoodHistoryBtn').addEventListener('click', async () => { await renderMoodHistory(); openDialog('moodHistoryDialog'); });
   $('exportMoodBtn').addEventListener('click', exportMoodNotes);
-  $('moodExportToggle').addEventListener('change', e => { setMoodExportIncluded(e.target.checked); showToast(e.target.checked ? '导出训练数据时会包含心情/状态记录' : '导出训练数据时将不含心情/状态记录'); });
+  $('moodExportToggle').addEventListener('change', e => { setMoodExportIncluded(e.target.checked); showToast(e.target.checked ? '已开启：导出训练数据时包含心情/状态记录（立即生效，无需点保存）' : '已关闭：导出训练数据不含心情/状态记录（立即生效）'); });
   $('moodHistoryList').addEventListener('click', async e => {
     const del = e.target.closest('[data-mood-delete]');
     if (!del) return;
