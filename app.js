@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.16';
+const APP_VERSION = '1.18';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -31,6 +31,80 @@ const TEMPO_PRESETS = {
     { label: '呼气 · 发力站起', seconds: 1, countOut: false, voice: '呼气，站起', color: PHASE_COLOR.exhale }
   ]
 };
+
+// ===== 45 个居家/宾馆默认动作包（v1.18 新增）=====
+// 节拍配色：呼气/发力=红，保持/停顿=蓝，吸气/还原=绿；节拍描述统一用一个字
+const BEAT_COLOR = { e: '#ef4444', h: '#3b82f6', i: '#22c55e' };
+const beat = (label, seconds, tone) => ({ label, seconds, color: BEAT_COLOR[tone], voice: label });
+
+const DEFAULT_ACTION_PACK = [
+  { name:'徒手深蹲', muscle:'腿部', type:'reps', notes:'双脚与肩同宽，膝对脚尖，臀后坐下蹲至大腿近水平。', cue:'膝盖外顶，别内扣', target:15, tempoPhases:[beat('蹲',3,'i'),beat('停',1,'h'),beat('起',2,'e')] },
+  { name:'靠墙静蹲', muscle:'腿部', type:'time', notes:'背贴墙，膝约九十度，腰背贴紧，均匀呼吸勿憋气。', cue:'重心在后，膝别超脚尖', target:40, tempoPhases:[beat('稳',4,'h'),beat('吸',3,'i'),beat('呼',3,'e')] },
+  { name:'弓步蹲（原地分腿蹲）', muscle:'腿部', type:'side', leftRight:true, notes:'前后脚站定，只上下沉，前膝对脚尖，重心居中。', cue:'重心居中，别前后晃', target:12, tempoPhases:[beat('蹲',3,'i'),beat('停',1,'h'),beat('起',2,'e')] },
+  { name:'臀桥', muscle:'臀部', type:'reps', notes:'仰卧屈膝，脚跟发力顶髋，顶峰夹臀停一秒再落。', cue:'顶髋夹臀，别用腰', target:15, tempoPhases:[beat('顶',2,'e'),beat('停',2,'h'),beat('落',3,'i')] },
+  { name:'单腿臀桥', muscle:'臀部', type:'side', leftRight:true, notes:'单腿撑地顶髋，骨盆保持水平，勿向一侧倾斜。', cue:'骨盆摆正，别歪', target:12, tempoPhases:[beat('顶',2,'e'),beat('停',2,'h'),beat('落',3,'i')] },
+  { name:'臀桥交替抬腿', muscle:'臀部', type:'reps', notes:'臀桥顶峰稳住，交替轻抬一腿，骨盆不晃。', cue:'慢点别晃', target:12, tempoPhases:[beat('顶',2,'e'),beat('抬',2,'h'),beat('换',2,'h'),beat('落',2,'i')] },
+  { name:'弹力带硬拉', muscle:'臀腿', type:'reps', notes:'踩住弹力带，屈髋后移，背挺直拉起再缓慢放下。', cue:'背挺直，臀后移', target:12, tempoPhases:[beat('拉',2,'e'),beat('停',1,'h'),beat('放',3,'i')] },
+  { name:'徒手罗马尼亚硬拉／早安式', muscle:'臀腿', type:'reps', notes:'膝微屈，臀部后移，背挺直，感受大腿后侧拉伸。', cue:'背挺直，臀后推', target:12, tempoPhases:[beat('俯',3,'i'),beat('停',1,'h'),beat('起',2,'e')] },
+  { name:'提踵', muscle:'腿部', type:'reps', notes:'扶稳支撑，踮脚至最高停一秒，再缓慢落下。', cue:'别借惯性弹', target:15, tempoPhases:[beat('踮',2,'e'),beat('停',1,'h'),beat('落',2,'i')] },
+  { name:'站姿后踢腿', muscle:'臀部', type:'side', leftRight:true, notes:'扶椅背，腿向后伸直踢起，顶峰夹臀不甩腿。', cue:'夹臀发力，别甩腰', target:12, tempoPhases:[beat('踢',1,'e'),beat('停',2,'h'),beat('回',2,'i')] },
+  { name:'蚌式开合', muscle:'臀部', type:'side', leftRight:true, notes:'侧卧屈膝，双脚并拢，膝盖缓慢开合，感受臀侧发力。', cue:'脚并拢，膝开合', target:15, tempoPhases:[beat('开',2,'e'),beat('停',1,'h'),beat('合',2,'i')] },
+  { name:'侧卧抬腿', muscle:'臀部', type:'side', leftRight:true, notes:'侧卧，上腿伸直向上抬，脚尖略下压，慢起慢落。', cue:'腿往正上抬，别后甩', target:15, tempoPhases:[beat('抬',2,'e'),beat('停',1,'h'),beat('落',2,'i')] },
+  { name:'站姿侧踢腿', muscle:'腿部', type:'side', leftRight:true, notes:'扶椅背，腿向侧面抬起，控制速度不借惯性。', cue:'慢起慢落，别甩', target:12, tempoPhases:[beat('踢',1,'e'),beat('停',1,'h'),beat('回',2,'i')] },
+  { name:'螃蟹步', muscle:'臀部', type:'reps', notes:'半蹲屈膝，横向迈步，膝盖对脚尖，臀侧持续紧张。', cue:'半蹲稳住，别塌腰', target:12, tempoPhases:[beat('迈',2,'e'),beat('停',1,'h'),beat('收',2,'i')] },
+  { name:'上斜俯卧撑', muscle:'胸', type:'reps', notes:'手扶稳固支撑，身体成直线，屈肘下沉再推起。', cue:'身体成线，支撑要稳', target:12, tempoPhases:[beat('下',3,'i'),beat('停',1,'h'),beat('撑',1,'e')] },
+  { name:'跪姿俯卧撑', muscle:'胸', type:'reps', notes:'跪姿撑地，身体成线，胸口下沉至接近地面。', cue:'手腕垫好，身成线', target:12, tempoPhases:[beat('下',3,'i'),beat('停',1,'h'),beat('撑',1,'e')] },
+  { name:'标准俯卧撑', muscle:'胸', type:'reps', notes:'双手略宽于肩，身体成线，屈肘下沉再推起。', cue:'收腹夹臀，别塌腰', target:12, tempoPhases:[beat('下',3,'i'),beat('停',1,'h'),beat('撑',1,'e')] },
+  { name:'宽距俯卧撑', muscle:'胸', type:'reps', notes:'双手加宽，屈肘外展下沉，胸外侧发力推起。', cue:'肩痛就跳过', target:12, tempoPhases:[beat('下',3,'i'),beat('停',1,'h'),beat('撑',1,'e')] },
+  { name:'窄距俯卧撑', muscle:'手臂', type:'reps', notes:'双手窄于肩，肘贴身体下沉，三头肌发力推起。', cue:'手腕立直，别塌', target:12, tempoPhases:[beat('下',3,'i'),beat('停',1,'h'),beat('撑',1,'e')] },
+  { name:'钻石俯卧撑', muscle:'手臂', type:'reps', notes:'双手成菱形，肘贴身下沉，靠三头肌推起。', cue:'硬地别做', target:12, tempoPhases:[beat('下',3,'i'),beat('停',1,'h'),beat('撑',1,'e')] },
+  { name:'下斜俯卧撑', muscle:'胸', type:'reps', notes:'脚垫高，身体成线，屈肘下沉再推起。', cue:'确认家具稳，再上脚', target:12, tempoPhases:[beat('下',3,'i'),beat('停',1,'h'),beat('撑',1,'e')] },
+  { name:'弹力带划船', muscle:'背', type:'reps', notes:'踩住弹力带，屈髋前倾，肘向后拉夹肩胛。', cue:'肩下沉，肘后拉', target:12, tempoPhases:[beat('拉',2,'e'),beat('停',1,'h'),beat('放',3,'i')] },
+  { name:'面拉', muscle:'背', type:'reps', notes:'弹力带固定眼前高度，肘外展向面部方向拉。', cue:'肘打开，拉向脸', target:15, tempoPhases:[beat('拉',2,'e'),beat('停',1,'h'),beat('放',2,'i')] },
+  { name:'毛巾门框划船', muscle:'背', type:'reps', notes:'毛巾固定门把，身体后倾，肘向后拉夹背。', cue:'先确认门稳', target:12, tempoPhases:[beat('拉',2,'e'),beat('停',1,'h'),beat('放',3,'i')] },
+  { name:'俯卧 Y-T-W', muscle:'背', type:'reps', notes:'俯身，双臂依次摆成 Y、T、W 形，收紧上背。', cue:'肩胛夹紧，别耸肩', target:12, tempoPhases:[beat('展',2,'e'),beat('停',1,'h'),beat('收',2,'i')] },
+  { name:'超人式', muscle:'背', type:'reps', notes:'俯卧，手脚同时抬起，顶峰停两秒再落下。', cue:'慢起慢落，别弹', target:12, tempoPhases:[beat('抬',2,'e'),beat('停',2,'h'),beat('落',2,'i')] },
+  { name:'平板支撑', muscle:'核心', type:'time', notes:'肘撑地，身体成直线，收腹夹臀，均匀呼吸。', cue:'收腹夹臀，腰别塌', target:40, tempoPhases:[beat('稳',4,'h'),beat('吸',3,'i'),beat('呼',3,'e')] },
+  { name:'侧平板支撑', muscle:'核心', type:'side', leftRight:true, notes:'侧身肘撑，髋部抬起成直线，不前后倒。', cue:'髋顶起来，别下沉', target:3, tempoPhases:[beat('稳',4,'h'),beat('吸',3,'i'),beat('呼',3,'e')] },
+  { name:'死虫式', muscle:'核心', type:'reps', notes:'仰卧，对侧手脚缓慢伸展，腰部始终贴地。', cue:'腰贴地，慢伸', target:12, tempoPhases:[beat('伸',2,'i'),beat('停',1,'h'),beat('收',2,'e')] },
+  { name:'鸟狗式', muscle:'核心', type:'reps', notes:'四点跪姿，对侧手脚伸展，骨盆不晃。', cue:'骨盆摆正，别晃', target:12, tempoPhases:[beat('伸',2,'i'),beat('停',1,'h'),beat('收',2,'e')] },
+  { name:'卷腹', muscle:'腰腹', type:'reps', notes:'仰卧屈膝，上背卷起，下巴不贴胸，慢起慢落。', cue:'下巴留空，别拽脖', target:15, tempoPhases:[beat('卷',2,'e'),beat('停',1,'h'),beat('落',2,'i')] },
+  { name:'反向卷腹', muscle:'腰腹', type:'reps', notes:'仰卧屈膝，卷骨盆带下背离地，缓慢落下。', cue:'别用惯性', target:12, tempoPhases:[beat('卷',2,'e'),beat('停',1,'h'),beat('落',2,'i')] },
+  { name:'仰卧举腿', muscle:'腰腹', type:'reps', notes:'仰卧，双腿伸直缓慢抬起再落下，下背贴地。', cue:'腰贴地，拱了就停', target:12, tempoPhases:[beat('举',2,'e'),beat('停',1,'h'),beat('落',3,'i')] },
+  { name:'登山跑（慢速版）', muscle:'全身', type:'reps', notes:'俯撑，手脚交替轻点地，放慢速度保持节奏。', cue:'脚尖轻点，别砸地', target:20, tempoPhases:[beat('点',1,'e'),beat('换',1,'i'),beat('停',1,'h')] },
+  { name:'原地高抬腿（静音版）', muscle:'全身', type:'reps', notes:'原地抬腿，前脚掌轻落地，不追求高度。', cue:'前掌落地，要轻', target:20, tempoPhases:[beat('抬',1,'e'),beat('落',1,'i'),beat('停',1,'h')] },
+  { name:'开合步', muscle:'全身', type:'reps', notes:'原地开合踏步，脚不腾空，手脚协调配合。', cue:'脚别离地', target:20, tempoPhases:[beat('开',1,'e'),beat('合',1,'i'),beat('停',1,'h')] },
+  { name:'影子拳击', muscle:'全身', type:'reps', notes:'轻步伐出拳组合，保持节奏，注意挥臂空间。', cue:'留空间，轻出拳', target:20, tempoPhases:[beat('出',1,'e'),beat('收',1,'i'),beat('停',1,'h')] },
+  { name:'爬楼梯', muscle:'全身', type:'time', notes:'匀速上楼，身体略前倾，下楼坐电梯护膝。', cue:'下楼别跑', target:60, tempoPhases:[beat('上',2,'e'),beat('换',1,'i'),beat('停',1,'h')] },
+  { name:'开合跳', muscle:'全身', type:'reps', notes:'双脚开合跳，落地屈膝缓冲，节奏均匀。', cue:'落地屈膝，慎扰民', target:20, tempoPhases:[beat('跳',1,'e'),beat('停',1,'h'),beat('落',1,'i')] },
+  { name:'波比跳', muscle:'全身', type:'reps', notes:'下蹲撑地，俯身，起身跳起，连贯完成。', cue:'落地缓冲，宾馆别做', target:12, tempoPhases:[beat('蹲',1,'i'),beat('撑',1,'h'),beat('跳',1,'e'),beat('起',1,'e')] },
+  { name:'猫牛式', muscle:'其他', type:'reps', notes:'四点跪姿，脊柱逐节屈伸，配合呼吸。', cue:'随呼吸，慢慢来', target:12, tempoPhases:[beat('弓',3,'e'),beat('停',1,'h'),beat('塌',3,'i')] },
+  { name:'90/90 髋部旋转', muscle:'其他', type:'reps', notes:'坐姿双腿各成九十度，交替转髋，上身稳定。', cue:'上身别晃', target:12, tempoPhases:[beat('转',2,'e'),beat('停',1,'h'),beat('回',2,'i')] },
+  { name:'髋屈肌拉伸', muscle:'腿部', type:'side', leftRight:true, notes:'弓步跪姿，前腿屈膝前推，后侧髋有拉伸感。', cue:'收臀前推，停三十秒', target:3, tempoPhases:[beat('推',3,'e'),beat('停',8,'h'),beat('收',3,'i')] },
+  { name:'胸大肌门框拉伸', muscle:'胸', type:'side', leftRight:true, notes:'前臂贴门框，身体缓慢前转，胸前有拉伸感。', cue:'肩下沉，身体前转', target:3, tempoPhases:[beat('转',3,'e'),beat('停',8,'h'),beat('收',3,'i')] },
+  { name:'婴儿式', muscle:'其他', type:'time', notes:'跪坐前趴，额头贴地，双臂前伸放松。', cue:'随呼吸，放松背', target:30, tempoPhases:[beat('伏',5,'h'),beat('吸',3,'i'),beat('呼',4,'e')] }
+];
+
+// 统一生成默认动作记录：起势缓冲 15 秒、组间休息 40 秒，其余字段按 v1.16 规范
+function makePackRecord(s) {
+  return {
+    id: makeId(),
+    name: s.name,
+    muscle: s.muscle,
+    type: s.type,
+    leftRight: Boolean(s.leftRight),
+    notes: s.notes,
+    cue: s.cue,
+    prepSeconds: 15,
+    defaultTarget: { sets: 3, target: s.target, weight: 0, restSeconds: 40 },
+    tempoPhases: s.tempoPhases,
+    videoUrl: '',
+    videoBlob: null,
+    pureVideo: false,
+    createdAt: nowIso(),
+    builtIn: true
+  };
+}
 
 let db;
 let currentPage = 'home';
@@ -566,76 +640,27 @@ async function populateCategorySelects(selectedMuscle = null) {
   }
 }
 
+// 首次安装：直接播种 45 个默认动作
 async function seedData() {
   const exercises = await getAll('exercises');
   if (exercises.length) return;
-  const samples = [
-    {
-      name: '俯卧撑', muscle: '胸', type: 'reps',
-      notes: '双手略宽于肩，身体保持一条直线。下降时控制速度，推起时呼气，避免塌腰或耸肩。',
-      cue: '注意核心收紧，吸气缓慢下放，呼气有力推起！',
-      prepSeconds: 5,
-      defaultTarget: { sets: 3, target: 12, weight: 0, restSeconds: 45 },
-      tempoPhases: TEMPO_PRESETS.pushup
-    },
-    {
-      name: '凯格尔收缩', muscle: '腰腹', type: 'time',
-      notes: '仰卧或坐姿均可，保持腹部与臀部自然放松，专注盆底肌向内向上收紧与彻底放松。',
-      cue: '呼气时收缩盆底肌，吸气时彻底放松，不要憋气！',
-      prepSeconds: 5,
-      defaultTarget: { sets: 3, target: 30, weight: 0, restSeconds: 30 },
-      tempoPhases: TEMPO_PRESETS.kegel
-    },
-    {
-      name: '弹力带后踢', muscle: '臀腿', type: 'side',
-      notes: '骨盆保持稳定，核心微收，臀部发力向后上方踢出，避免腰部代偿甩动。',
-      cue: '顶峰保持收紧，回程缓慢控制，绝不用腰借力！',
-      prepSeconds: 5,
-      defaultTarget: { sets: 3, target: 15, weight: 0, restSeconds: 45 },
-      tempoPhases: TEMPO_PRESETS.kickback
-    },
-    {
-      name: '徒手深蹲', muscle: '臀腿', type: 'reps',
-      notes: '双脚与肩同宽，膝盖朝脚尖方向，臀部向后向下坐，脊柱保持中立。',
-      cue: '注意背部挺直，下蹲吸气，站起呼气，膝盖不要内扣！',
-      prepSeconds: 5,
-      defaultTarget: { sets: 4, target: 15, weight: 0, restSeconds: 60 },
-      tempoPhases: TEMPO_PRESETS.squat
-    },
-    {
-      name: '臀桥', muscle: '臀腿', type: 'reps',
-      notes: '仰卧屈膝，脚掌踩稳地面，顶起髋部时夹紧臀部，避免腰部过度反弓。',
-      cue: '顶起时呼气并收紧臀部，下放时控制节奏吸气！',
-      prepSeconds: 5,
-      defaultTarget: { sets: 3, target: 15, weight: 0, restSeconds: 45 },
-      tempoPhases: []
-    },
-    {
-      name: '平板支撑', muscle: '腰腹', type: 'time',
-      notes: '肘部位于肩膀正下方，头、背、髋保持自然直线，不塌腰也不撅臀。',
-      cue: '保持均匀呼吸，不要憋气，核心持续发力！',
-      prepSeconds: 5,
-      defaultTarget: { sets: 3, target: 40, weight: 0, restSeconds: 45 },
-      tempoPhases: []
-    }
-  ];
-  for (const s of samples) {
-    await put('exercises', {
-      id: makeId(),
-      name: s.name,
-      muscle: s.muscle,
-      type: s.type,
-      notes: s.notes,
-      cue: s.cue,
-      prepSeconds: s.prepSeconds,
-      defaultTarget: s.defaultTarget,
-      tempoPhases: s.tempoPhases,
-      videoUrl: '',
-      videoBlob: null,
-      createdAt: nowIso(),
-      builtIn: true
-    });
+  for (const s of DEFAULT_ACTION_PACK) await put('exercises', makePackRecord(s));
+}
+
+// 老用户升级：按动作名补齐缺失的默认动作，绝不覆盖用户已有动作（含用户改过的同名动作）
+async function migrateActionPack() {
+  const META_KEY = 'default-action-pack-v18';
+  const metaList = await getAll('meta');
+  if (metaList.find(m => m.key === META_KEY)) return;
+  const exercises = await getAll('exercises');
+  const existingNames = new Set(exercises.map(e => e.name));
+  let added = 0;
+  for (const s of DEFAULT_ACTION_PACK) {
+    if (existingNames.has(s.name)) continue;
+    await put('exercises', makePackRecord(s));
+    added += 1;
   }
+  await put('meta', { key: META_KEY, value: { at: nowIso(), added } });
 }
 
 function navigate(page, options = {}) {
@@ -1524,7 +1549,11 @@ function setupRunnerPhase(isFirstStart = false) {
 
 // 更新页面最下方的大倒计时数字
 function updateTempoNumber() {
-  const val = Math.max(0, runner?.tempoSecLeft || 0);
+  const item = runner ? currentRunnerItem() : null;
+  // 计时型显示累计秒数，次数型显示当前节拍剩余秒
+  const val = item?.exercise?.type === 'time'
+    ? Math.max(0, runner?.elapsedSec || 0)
+    : Math.max(0, runner?.tempoSecLeft || 0);
   const main = $('runnerNumber');
   if (main) main.textContent = val;
 }
@@ -1542,9 +1571,13 @@ function startTempoPhase(phaseIdx) {
   runner.tempoIndex = phaseIdx % phases.length;
   const p = phases[runner.tempoIndex];
   runner.tempoSecLeft = clampInt(p.seconds, 1, 120, 3);
+  // 计时型动作带节拍时按真实秒数计时，而不是按节拍轮数（否则 40 秒会被做成 40 轮）
+  const isTimed = exercise.type === 'time';
+  const targetSec = isTimed ? Math.max(0, Number(item.target ?? exercise.defaultTarget?.target ?? 0) || 0) : 0;
+  if (isTimed && !runner.plainCueFired) runner.plainCueFired = { ten: false, half: false, left: false, done: false, lastCueSec: -1 };
 
-  // 一次动作开始前：只报数字，不说“第几个”
-  if (phaseIdx === 0) {
+  // 一次动作开始前：只报数字，不说“第几个”（计时型不报数）
+  if (!isTimed && phaseIdx === 0) {
     const nextNum = runner.completedRepsInSet + 1;
     speak(String(nextNum), true, 'count');
     // 第 3 次、之后每完成 5 次插播专属语音播报（数字滴声之后播）：完成数 = 3、8、13…
@@ -1570,13 +1603,43 @@ function startTempoPhase(phaseIdx) {
     playTickCue(); // 每秒一声轻滴
     updateTempoNumber();
 
+    // 计时型：按真实秒数累计，并复用计时播报（10 秒 / 过半 / 最后 10 秒 / 到点）
+    if (isTimed) {
+      runner.elapsedSec = (runner.elapsedSec || 0) + 1;
+      const sec = runner.elapsedSec;
+      const numEl = $('runnerNumber');
+      if (numEl) numEl.textContent = sec;
+      if (targetSec >= 2 && runner.plainCueFired) {
+        const fired = runner.plainCueFired;
+        const cueText = (exercise.cue || '').trim();
+        const halfSec = Math.floor(targetSec / 2);
+        const playCueOnce = () => { if (fired.lastCueSec !== sec) { fired.lastCueSec = sec; speak(cueText, false, 'key'); } };
+        if (cueText && sec >= 10 && !fired.ten && 10 < targetSec) { fired.ten = true; playCueOnce(); }
+        if (cueText && halfSec >= 2 && sec >= halfSec && !fired.half) { fired.half = true; playCueOnce(); }
+        if (targetSec > 10 && sec >= targetSec - 10 && !fired.left) { fired.left = true; speak('最后10秒，坚持住', false, 'key'); }
+        if (!fired.done && sec >= targetSec) {
+          fired.done = true;
+          stopRunnerTimer();
+          speak('时间到，本组完成', false, 'key');
+          onSideOrSetComplete();
+          return;
+        }
+      }
+    }
+
     if (runner.tempoSecLeft > 0) return;
 
     const nextIdx = runner.tempoIndex + 1;
     if (nextIdx < phases.length) {
       startTempoPhase(nextIdx);
     } else {
-      // 一轮节拍走完 = 完成一次
+      // 一轮节拍走完
+      if (isTimed) {
+        // 计时型：一轮节拍结束后继续下一轮，直到累计秒数到达目标（到点不自动结束，保持手动确认）
+        startTempoPhase(0);
+        return;
+      }
+      // 次数型：一轮节拍走完 = 完成一次
       runner.completedRepsInSet += 1;
       const repsDoneEl = $('repsDone');
       if (repsDoneEl) repsDoneEl.textContent = runner.completedRepsInSet;
@@ -1596,15 +1659,17 @@ function onSideOrSetComplete() {
   if (!runner) return;
   const item = currentRunnerItem();
   const exercise = item.exercise;
-  speak(String(runner.completedRepsInSet), true, 'count');
+  const isTimed = exercise.type === 'time';
+  const doneValue = isTimed ? Math.max(0, runner.elapsedSec || 0) : runner.completedRepsInSet;
+  if (!isTimed) speak(String(doneValue), true, 'count');
 
   if (isSplitSide(exercise)) {
     if (runner.sideStage === 'left') {
-      runner.leftDone = runner.completedRepsInSet;
+      runner.leftDone = doneValue;
       beginSideSwitch();
       return;
     }
-    runner.rightDone = runner.completedRepsInSet;
+    runner.rightDone = doneValue;
   }
   autoCompleteSet();
 }
@@ -1786,7 +1851,7 @@ function renderRunner() {
   if (runner.phase === 'work' && currentPhase) {
     workBottomHtml = `
       <div class="work-bottom">
-        <div class="reps-progress">已完成 <b id="repsDone">${runner.completedRepsInSet}</b> / ${item.target || exercise.defaultTarget?.target || '—'} 次${split ? ` · ${runner.sideStage === 'right' ? '右侧' : '左侧'}` : ''}</div>
+        <div class="reps-progress">${exercise.type === 'time' ? `已计时 <b id="repsDone">${runner.elapsedSec || 0}</b> / ${item.target || exercise.defaultTarget?.target || '—'} 秒` : `已完成 <b id="repsDone">${runner.completedRepsInSet}</b> / ${item.target || exercise.defaultTarget?.target || '—'} 次`}${split ? ` · ${runner.sideStage === 'right' ? '右侧' : '左侧'}` : ''}</div>
         <div class="work-countdown-row">
           <button type="button" class="cd-side-btn cd-pause" id="workPauseBtn" title="暂停/继续">⏸</button>
           <div class="runner-number" id="runnerNumber">${Math.max(0, runner.tempoSecLeft)}</div>
@@ -2654,6 +2719,7 @@ async function init() {
   try {
     db = await openDatabase();
     await seedData();
+    await migrateActionPack();
     await populateCategorySelects();
     await renderHome();
     restoreSavedPage();
