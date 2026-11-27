@@ -14,7 +14,8 @@
   <header class="topbar">
     <div class="brand"><div class="brand-mark">F</div><div><strong>FitLog</strong><small>我的私人运动教练</small></div></div>
     <div class="topbar-actions">
-      <span class="version-badge" id="appVersion">v1.23</span>
+      <button id="helpBtn" class="help-btn" type="button" title="使用说明" aria-label="使用说明">?</button>
+      <span class="version-badge" id="appVersion">v1.24</span>
       <button id="installBtn" class="install-btn hidden" type="button">安装</button>
     </div>
   </header>
@@ -145,7 +146,7 @@
       </div>
       <div class="info-card">
         <b>版本信息</b>
-        <p>FitLog <span id="appVersionData">v1.23</span> · PWA · IndexedDB 本地存储</p>
+        <p>FitLog <span id="appVersionData">v1.24</span> · PWA · IndexedDB 本地存储</p>
         <p id="storageStatus">正在检查本地数据库……</p>
       </div>
     </section>
@@ -160,6 +161,26 @@
   </nav>
 
   <!-- 身高体重：更新 / 曲线详情 -->
+  <!-- 使用说明 -->
+  <dialog id="helpDialog" class="app-dialog help-dialog">
+    <div class="dialog-head">
+      <h2>使用说明</h2>
+      <button type="button" class="icon-btn" data-close="helpDialog">×</button>
+    </div>
+    <div class="help-body">
+      <p class="help-declare">【声明】本 APP 旨在帮助你更高效、坚持完成运动，并可将你的运动数据导出用于查看分析。本 APP 不会要求你上传任何资料，你所有的信息都仅保存在你的手机本地；只有当你主动使用"导出并分享"功能时，数据才会被分享出去。请科学训练，坚持训练。祝你强壮、健康！</p>
+      <p class="help-title">使用说明：</p>
+      <ol class="help-list">
+        <li>动作库里有默认的动作以及默认参数，你可以根据自己的需求自行修改。</li>
+        <li>如果动作库里没有你想要的动作，你可以自己添加。</li>
+        <li>你也可以将手机里的视频上传，进行跟练。上传的视频仅保存在手机本地，不会上传。</li>
+        <li>你可以根据动作库里的动作，包括上传的视频动作，自行编排一节课程。</li>
+        <li>如需更换手机，请先将所有运动数据备份再进行恢复到新手机。备份时不会备份视频。</li>
+        <li>你可以将每日的心情，训练状态，以及其他想记录的身体状态记录下来，记录均保存在手机本地不会上传。也可以选择将记录导出进行查看分析。</li>
+      </ol>
+    </div>
+  </dialog>
+
   <dialog id="bodyStatsDialog" class="app-dialog">
     <div class="dialog-head">
       <h2>更新身高体重</h2>
