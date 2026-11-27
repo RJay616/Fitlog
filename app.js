@@ -1,12 +1,12 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.18';
+const APP_VERSION = '1.19';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
-const DB_VERSION = 2;
-const STORES = ['exercises', 'plans', 'sessions', 'meta'];
+const DB_VERSION = 3;
+const STORES = ['exercises', 'plans', 'sessions', 'meta', 'bodyStats'];
 const DEFAULT_CATEGORIES = ['臀腿', '腰腹', '胸', '背', '肩', '手臂', '核心', '臀部', '腿部', '全身', '其他'];
 
 // 阶段默认配色：呼气红 / 保持停顿黄 / 吸气绿（均可在编辑器里自定义）
@@ -176,6 +176,7 @@ function openDatabase() {
       if (!database.objectStoreNames.contains('plans')) database.createObjectStore('plans', { keyPath: 'id' });
       if (!database.objectStoreNames.contains('sessions')) database.createObjectStore('sessions', { keyPath: 'id' });
       if (!database.objectStoreNames.contains('meta')) database.createObjectStore('meta', { keyPath: 'key' });
+      if (!database.objectStoreNames.contains('bodyStats')) database.createObjectStore('bodyStats', { keyPath: 'id' });
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error || new Error('数据库打开失败'));
@@ -198,6 +199,38 @@ const getAll = name => storeRequest(name, 'readonly', store => store.getAll());
 const put = (name, value) => storeRequest(name, 'readwrite', store => store.put(value));
 const remove = (name, id) => storeRequest(name, 'readwrite', store => store.delete(id));
 const clearStore = name => storeRequest(name, 'readwrite', store => store.clear());
+
+/* ===== 身体数据：主界面卡片、跑步打卡、AI 分享三处共用同一份数据 ===== */
+async function getBodyStatsList() {
+  const list = await getAll('bodyStats');
+  return list.sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt));
+}
+
+// 取当前有效值：某一项为空时，继续找上一条非空记录（跑步打卡可能只填体重）
+async function getCurrentBody() {
+  const list = await getBodyStatsList();
+  return {
+    height: list.find(r => Number(r.height) > 0)?.height ?? null,
+    weight: list.find(r => Number(r.weight) > 0)?.weight ?? null,
+    updatedAt: list[0]?.recordedAt || null,
+    list
+  };
+}
+
+async function saveBodyStats({ height, weight, source = 'manual', recordedAt } = {}) {
+  const h = Number(height);
+  const w = Number(weight);
+  if (!Number.isFinite(h) && !Number.isFinite(w)) return null;
+  const record = {
+    id: makeId(),
+    height: Number.isFinite(h) && h > 0 ? h : null,
+    weight: Number.isFinite(w) && w > 0 ? w : null,
+    source,
+    recordedAt: recordedAt || nowIso()
+  };
+  await put('bodyStats', record);
+  return record;
+}
 
 function showToast(message) {
   const toast = $('toast');
@@ -769,6 +802,7 @@ async function renderHome() {
   $('weekSessions').textContent = weekly.length;
   $('weekMinutes').textContent = Math.round(minutes / 60);
   $('totalSessions').textContent = sessions.length;
+  await renderBodyCard();
   const recent = $('recentSessions');
   if (!sessions.length) {
     recent.className = 'list-card empty-state';
@@ -779,9 +813,164 @@ async function renderHome() {
   recent.innerHTML = sessions.slice(0, 3).map(sessionCardHtml).join('');
 }
 
+/* ===== 身高体重卡片 / 体重曲线 ===== */
+function weightPointsFrom(list, days = 0) {
+  const cutoff = days ? Date.now() - days * 86400000 : 0;
+  return list
+    .filter(r => Number(r.weight) > 0 && new Date(r.recordedAt).getTime() >= cutoff)
+    .sort((a, b) => new Date(a.recordedAt) - new Date(b.recordedAt))
+    .map(r => ({ label: dateLabel(r.recordedAt), value: Number(r.weight), date: r.recordedAt }));
+}
+
+function buildWeightSvg(points, withDates = false) {
+  const valid = points.filter(p => Number(p.value) > 0);
+  if (!valid.length) return '<div class="empty-state" style="padding:16px 6px">还没有体重记录，点「更新」添加第一条。</div>';
+  const w = 340;
+  const h = withDates ? 175 : 84;
+  const padL = 32, padR = 12, padT = 12, padB = withDates ? 26 : 10;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+  const values = valid.map(p => p.value);
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (max - min < 2) {
+    const mid = (max + min) / 2;
+    min = mid - 1;
+    max = mid + 1;
+  } else {
+    min -= 0.6;
+    max += 0.6;
+  }
+  const coords = valid.map((p, idx) => ({
+    ...p,
+    x: valid.length === 1 ? padL + plotW / 2 : padL + (idx / (valid.length - 1)) * plotW,
+    y: padT + plotH - ((p.value - min) / (max - min)) * plotH
+  }));
+  const line = coords.map(c => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' ');
+  const area = `${padL},${padT + plotH} ${line} ${coords[coords.length - 1].x.toFixed(1)},${padT + plotH}`;
+  const grid = [max, (max + min) / 2, min].map((v, i) => {
+    const y = padT + (i / 2) * plotH;
+    return `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${w - padR}" y2="${y.toFixed(1)}" stroke="#e2e8f0" stroke-dasharray="3 3"></line><text x="${padL - 5}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="#94a3b8">${v.toFixed(1)}</text>`;
+  }).join('');
+  const dots = coords.map(c => `
+    <circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="3" fill="#2864dc"></circle>
+    ${withDates ? `<text x="${c.x.toFixed(1)}" y="${(c.y - 7).toFixed(1)}" text-anchor="middle" font-size="9" fill="#1e293b">${c.value}</text><text x="${c.x.toFixed(1)}" y="${h - 7}" text-anchor="middle" font-size="9" fill="#64748b">${escapeHtml(c.label)}</text>` : ''}
+  `).join('');
+  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="体重曲线">${grid}${valid.length > 1 ? `<polygon points="${area}" fill="#dbeafe" opacity="0.5"></polygon><polyline points="${line}" fill="none" stroke="#2864dc" stroke-width="2" stroke-linejoin="round"></polyline>` : ''}${dots}</svg>`;
+}
+
+const fmtBodyNum = value => value == null ? '—' : String(Number(value).toFixed(1)).replace(/\.0$/, '');
+
+async function renderBodyCard() {
+  const body = await getCurrentBody();
+  if ($('bodyHeightVal')) $('bodyHeightVal').textContent = fmtBodyNum(body.height);
+  if ($('bodyWeightVal')) $('bodyWeightVal').textContent = fmtBodyNum(body.weight);
+  if ($('homeWeightChart')) $('homeWeightChart').innerHTML = buildWeightSvg(weightPointsFrom(body.list, 30), false);
+}
+
+async function openBodyStatsDialog() {
+  const body = await getCurrentBody();
+  $('inputHeight').value = body.height ?? '';
+  $('inputWeight').value = body.weight ?? '';
+  openDialog('bodyStatsDialog');
+}
+
+async function saveBodyStatsFromDialog() {
+  const height = $('inputHeight').value.trim();
+  const weight = $('inputWeight').value.trim();
+  if (!height && !weight) { showToast('请至少填写身高或体重'); return; }
+  await saveBodyStats({ height: height || null, weight: weight || null, source: 'manual' });
+  closeDialog('bodyStatsDialog');
+  showToast('身高体重已保存');
+  await renderBodyCard();
+  if (currentPage === 'data') await updateStorageStatus();
+}
+
+async function openBodyDetailDialog() {
+  const body = await getCurrentBody();
+  const points = weightPointsFrom(body.list);
+  $('bodyDetailChart').innerHTML = buildWeightSvg(points, true);
+  const rows = body.list.slice(0, 60).map(r => `<div style="margin-top:5px"><b>${escapeHtml(dateLabel(r.recordedAt))}</b> · 身高 ${fmtBodyNum(r.height)}cm · 体重 ${fmtBodyNum(r.weight)}kg${r.source === 'run' ? '（跑步打卡同步）' : ''}</div>`).join('');
+  $('bodyDetailList').innerHTML = `<b>历史记录（共 ${body.list.length} 条）</b><br>${rows || '暂无记录'}`;
+  openDialog('bodyDetailDialog');
+}
+
+const fmtPlainNum = value => value == null || value === '' ? '—' : String(Number(value));
+
 function sessionCardHtml(s) {
+  const actions = `<div class="card-actions"><button class="small-btn" data-session-detail="${escapeHtml(s.id)}">查看详情</button><button class="small-btn danger-text" data-session-delete="${escapeHtml(s.id)}">删除记录</button></div>`;
+  if (s.kind === 'checkin') {
+    const c = s.checkin || {};
+    const mins = fmtPlainNum(c.minutes ?? Math.round((s.durationSeconds || 0) / 60));
+    const meta = s.checkinType === 'run'
+      ? `${mins} 分钟 · ${fmtPlainNum(c.distanceKm)} 公里${c.heartRate ? ` · 心率 ${c.heartRate}` : ''}`
+      : `${fmtPlainNum(c.sets)} 组 × ${fmtPlainNum(c.reps)} 次 · ${mins} 分钟`;
+    const detail = s.checkinType === 'run'
+      ? `身高 ${fmtBodyNum(c.height)}cm · 体重 ${fmtBodyNum(c.weight)}kg`
+      : escapeHtml(c.note || '自定义运动打卡');
+    return `<article class="item-card"><div class="session-date">${escapeHtml(dateLabel(s.startedAt))} <span class="tag">打卡</span></div><div class="session-title">${escapeHtml(s.planName || '运动打卡')}</div><div class="session-meta">${meta}</div><div class="session-exercises">${detail}</div>${actions}</article>`;
+  }
   const names = (s.exercises || []).map(e => e.name).join('、');
-  return `<article class="item-card"><div class="session-date">${escapeHtml(dateLabel(s.startedAt))}</div><div class="session-title">${escapeHtml(s.planName || '自由训练')}</div><div class="session-meta">${Math.round((s.durationSeconds || 0) / 60)} 分钟 · ${(s.exercises || []).length} 个动作</div><div class="session-exercises">${escapeHtml(names || '无动作明细')}</div><div class="card-actions"><button class="small-btn" data-session-detail="${escapeHtml(s.id)}">查看详情</button><button class="small-btn danger-text" data-session-delete="${escapeHtml(s.id)}">删除记录</button></div></article>`;
+  return `<article class="item-card"><div class="session-date">${escapeHtml(dateLabel(s.startedAt))}</div><div class="session-title">${escapeHtml(s.planName || '自由训练')}</div><div class="session-meta">${Math.round((s.durationSeconds || 0) / 60)} 分钟 · ${(s.exercises || []).length} 个动作</div><div class="session-exercises">${escapeHtml(names || '无动作明细')}</div>${actions}</article>`;
+}
+
+/* ===== 运动打卡 ===== */
+async function openCheckinDialog() {
+  const body = await getCurrentBody();
+  $('checkinHeight').value = body.height ?? '';
+  $('checkinWeight').value = body.weight ?? '';
+  $('checkinType').value = 'run';
+  toggleCheckinFields();
+  openDialog('checkinDialog');
+}
+
+function toggleCheckinFields() {
+  const isRun = $('checkinType').value === 'run';
+  $('checkinRunFields').classList.toggle('hidden', !isRun);
+  $('checkinOtherFields').classList.toggle('hidden', isRun);
+}
+
+async function saveCheckin() {
+  const type = $('checkinType').value;
+  const stamped = nowIso();
+  const session = { id: makeId(), kind: 'checkin', checkinType: type, startedAt: stamped, endedAt: stamped, exercises: [] };
+
+  if (type === 'run') {
+    const minutes = Number($('checkinMinutes').value);
+    const distance = Number($('checkinDistance').value);
+    if (!(minutes > 0)) { showToast('请填写跑步时间'); return; }
+    if (!(distance > 0)) { showToast('请填写跑步距离'); return; }
+    const height = $('checkinHeight').value.trim();
+    const weight = $('checkinWeight').value.trim();
+    const heartRate = $('checkinHeartRate').value.trim();
+    if (height || weight) await saveBodyStats({ height: height || null, weight: weight || null, source: 'run' });
+    session.planName = '跑步打卡';
+    session.durationSeconds = Math.round(minutes * 60);
+    session.checkin = {
+      minutes,
+      distanceKm: distance,
+      height: height ? Number(height) : null,
+      weight: weight ? Number(weight) : null,
+      heartRate: heartRate ? Number(heartRate) : null
+    };
+  } else {
+    const name = $('checkinName').value.trim();
+    if (!name) { showToast('请填写运动名称'); return; }
+    const sets = clampInt($('checkinSets').value, 1, 99, 3);
+    const reps = clampInt($('checkinReps').value, 1, 9999, 20);
+    const minutes = Math.max(0, Number($('checkinDurationMin').value) || 0);
+    const weightKg = Math.max(0, Number($('checkinWeightKg').value) || 0);
+    const note = $('checkinNote').value.trim();
+    session.planName = name;
+    session.durationSeconds = Math.round(minutes * 60);
+    session.checkin = { name, sets, reps, minutes, weightKg, note };
+  }
+
+  await put('sessions', session);
+  closeDialog('checkinDialog');
+  showToast('打卡已保存到运动记录');
+  await renderHome();
+  if (currentPage === 'history') await renderHistory();
 }
 
 // 动作库与编辑
@@ -848,6 +1037,8 @@ function setVideoPreviewSrc(src) {
 
 function applyPureVideoMode() {
   const isPure = Boolean($('exercisePureVideo')?.checked);
+  const statsBox = $('videoStatsBox');
+  if (statsBox) statsBox.classList.toggle('hidden', !isPure);
   // 纯视频默认 10 秒、普通默认 5 秒；仅当当前仍是另一模式的默认值时才自动切换
   const prepEl = $('exPrepSeconds');
   if (prepEl) {
@@ -930,6 +1121,12 @@ async function openExerciseEditor(exercise = null) {
   const pureVideo = Boolean(exercise?.pureVideo);
   $('exercisePureVideo').checked = pureVideo;
   $('exPrepSeconds').value = exercise?.prepSeconds ?? (pureVideo ? 10 : 5);
+  const vs = exercise?.videoStats || {};
+  $('videoStatDuration').value = vs.durationSeconds ?? 300;
+  $('videoStatSets').value = vs.sets ?? 3;
+  $('videoStatWeightMode').value = vs.weightMode || 'self';
+  $('videoStatWeightKg').value = vs.weightKg ?? 0;
+  $('videoStatNote').value = vs.note || '';
   applyPureVideoMode();
   $('tempoPresetSelect').value = '';
   renderTempoPhaseEditor(exercise?.tempoPhases || []);
@@ -961,6 +1158,13 @@ async function saveExercise(event) {
       restSeconds: clampInt($('exDefaultRest').value, 0, 600, 45)
     },
     pureVideo: Boolean($('exercisePureVideo')?.checked),
+    videoStats: $('exercisePureVideo')?.checked ? {
+      durationSeconds: clampInt($('videoStatDuration').value, 1, 7200, 300),
+      sets: clampInt($('videoStatSets').value, 1, 20, 3),
+      weightMode: $('videoStatWeightMode').value === 'weighted' ? 'weighted' : 'self',
+      weightKg: Math.max(0, Number($('videoStatWeightKg').value) || 0),
+      note: $('videoStatNote').value.trim()
+    } : null,
     tempoPhases: $('exercisePureVideo')?.checked ? [] : collectTempoPhasesFromEditor(),
     videoUrl,
     videoBlob: draftExerciseVideoBlob || null,
@@ -1005,7 +1209,7 @@ async function showExerciseDetail(id, tab = 'info', chartMetric = 'primary') {
       : `<div class="detail-line"><b>起势准备</b>：${exercise.prepSeconds ?? 5} 秒</div>`;
 
     $('detailContent').innerHTML = `
-      <div class="detail-line"><b>模式：</b>${exercise.pureVideo ? '纯视频跟练（统计参数暂不启用）' : `${typeLabel(exercise.type)} · 常规训练`}</div>
+      <div class="detail-line"><b>模式：</b>${exercise.pureVideo ? '纯视频跟练（记录时长与负重）' : `${typeLabel(exercise.type)} · 常规训练`}</div>
       <div class="detail-line"><b>分类：</b>${escapeHtml(exercise.muscle)} <b>类型：</b>${typeLabel(exercise.type)}</div>
       ${videoHtml}
       <div class="detail-line"><b>动作要领</b><br>${escapeHtml(exercise.notes || '暂无')}</div>
@@ -1875,7 +2079,7 @@ function renderRunner() {
   }
 
   $('runnerBody').innerHTML = `
-    <div class="runner-kicker">动作 ${runner.index + 1} / ${runner.items.length} · ${isPureVideo ? '纯视频跟练（暂不统计）' : `第 ${runner.setIndex} / ${item.sets} 组（目标 ${item.target}${exercise.type === 'time' ? '秒' : '次'}）`}</div>
+    <div class="runner-kicker">动作 ${runner.index + 1} / ${runner.items.length} · ${isPureVideo ? `纯视频跟练 · 第 ${runner.setIndex} / ${item.sets} 组（记录时长）` : `第 ${runner.setIndex} / ${item.sets} 组（目标 ${item.target}${exercise.type === 'time' ? '秒' : '次'}）`}</div>
     <h2>${sideBadge}${escapeHtml(exercise.name)}</h2>
     ${(exercise.notes || exercise.cue) ? `<p class="runner-cue">💡 ${escapeHtml(exercise.notes || exercise.cue)}</p>` : ''}
     ${videoHtml}
@@ -2043,6 +2247,31 @@ function recordSet(exercise, payload) {
   exerciseRecord.sets.push({ setNumber: runner.setIndex, ...payload, completedAt: nowIso() });
 }
 
+// 纯视频动作没有“完成本组”按钮，推进到下一动作前补记一组统计（防重复）
+function recordPureVideoSetIfNeeded() {
+  if (!runner || !runner.session) return;
+  const item = currentRunnerItem();
+  if (!item || !item.exercise.pureVideo) return;
+  if (!Array.isArray(runner._recordedVideoKeys)) runner._recordedVideoKeys = [];
+  const key = `${runner.index}-${runner.setIndex}`;
+  if (runner._recordedVideoKeys.includes(key)) return;
+  runner._recordedVideoKeys.push(key);
+
+  const videoEl = $('runnerVideo');
+  const actualSec = videoEl && Number(videoEl.duration) > 0 ? Math.round(videoEl.duration) : null;
+  const vs = item.exercise.videoStats || {};
+  recordSet(item.exercise, {
+    reps: null,
+    leftReps: null,
+    rightReps: null,
+    durationSeconds: actualSec ?? clampInt(vs.durationSeconds, 1, 7200, 300),
+    plannedSets: clampInt(vs.sets, 1, 20, 3),
+    weightMode: vs.weightMode || 'self',
+    weightKg: vs.weightMode === 'weighted' ? Math.max(0, Number(vs.weightKg) || 0) : 0,
+    videoNote: vs.note || ''
+  });
+}
+
 // 本组结束后：同动作还有组 → 自动组间休息；否则进入下一动作（动作间也会休息）
 function advanceAfterSet() {
   const item = currentRunnerItem();
@@ -2100,6 +2329,7 @@ function applyPendingAdvance() {
 }
 
 function advanceRunner() {
+  recordPureVideoSetIfNeeded();
   stopRunnerTimer();
   const next = getNextStep();
   if (!next) {
@@ -2197,7 +2427,27 @@ async function showSessionDetail(id) {
   activeDetailExerciseId = null;
   $('detailTabs').classList.add('hidden');
   $('detailTitle').textContent = s.planName || '训练详情';
-  const lines = (s.exercises || []).map(e => `<div class="detail-line"><b>${escapeHtml(e.name)}</b><br>${(e.sets || []).map(set => `第${set.setNumber}组：${set.leftReps != null ? `左${set.leftReps}次 / 右${set.rightReps}次` : set.reps != null ? `${set.reps}次` : `${set.durationSeconds}秒`}${set.weightKg ? ` · ${set.weightKg}kg` : ''}`).join('<br>')}</div>`).join('');
+
+  if (s.kind === 'checkin') {
+    const c = s.checkin || {};
+    const body = s.checkinType === 'run'
+      ? `时间：${fmtPlainNum(c.minutes ?? Math.round((s.durationSeconds || 0) / 60))} 分钟<br>距离：${fmtPlainNum(c.distanceKm)} 公里<br>平均心率：${fmtPlainNum(c.heartRate)} 次/分<br>身高：${fmtBodyNum(c.height)} cm<br>体重：${fmtBodyNum(c.weight)} kg`
+      : `运动名称：${escapeHtml(c.name || s.planName || '')}<br>组数：${fmtPlainNum(c.sets)}<br>每组次数：${fmtPlainNum(c.reps)}<br>时长：${fmtPlainNum(c.minutes ?? Math.round((s.durationSeconds || 0) / 60))} 分钟<br>重量：${fmtPlainNum(c.weightKg)} kg<br>备注：${escapeHtml(c.note || '无')}`;
+    $('detailContent').innerHTML = `<div class="detail-line"><b>${escapeHtml(dateLabel(s.startedAt))} · 运动打卡</b><br>${body}</div>`;
+    openDialog('detailDialog');
+    return;
+  }
+
+  const lines = (s.exercises || []).map(e => `<div class="detail-line"><b>${escapeHtml(e.name)}</b><br>${(e.sets || []).map(set => {
+    let desc;
+    if (set.videoNote != null || set.weightMode != null) {
+      desc = `视频 ${fmtPlainNum(set.durationSeconds)}秒 · ${fmtPlainNum(set.plannedSets)}组 · ${set.weightMode === 'weighted' ? `负重 ${fmtPlainNum(set.weightKg)}kg` : '自重'}${set.videoNote ? ` · ${escapeHtml(set.videoNote)}` : ''}`;
+    } else {
+      desc = set.leftReps != null ? `左${set.leftReps}次 / 右${set.rightReps}次` : set.reps != null ? `${set.reps}次` : `${set.durationSeconds}秒`;
+      if (set.weightKg) desc += ` · ${set.weightKg}kg`;
+    }
+    return `第${set.setNumber}组：${desc}`;
+  }).join('<br>')}</div>`).join('');
   $('detailContent').innerHTML = `<div class="detail-line">${escapeHtml(dateLabel(s.startedAt))}<br>训练时长：${Math.round((s.durationSeconds || 0) / 60)}分钟</div>${lines || '<p>没有详细动作数据</p>'}`;
   openDialog('detailDialog');
 }
@@ -2222,12 +2472,13 @@ async function exportJson() {
   });
   const backup = {
     app: 'FitLog',
-    version: 2,
+    version: 3,
     exportedAt: nowIso(),
     categories: await getCategories(),
     exercises,
     plans: await getAll('plans'),
-    sessions: await getAll('sessions')
+    sessions: await getAll('sessions'),
+    bodyStats: await getAll('bodyStats')
   };
   downloadFile(`fitlog-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(backup, null, 2), 'application/json');
   try { localStorage.setItem(LAST_BACKUP_KEY, String(Date.now())); } catch (_) {}
@@ -2264,7 +2515,8 @@ async function importJson(file) {
     if (!parsed || parsed.app !== 'FitLog' || !Array.isArray(parsed.exercises) || !Array.isArray(parsed.plans) || !Array.isArray(parsed.sessions)) {
       throw new Error('文件格式不正确，无法识别为FitLog备份');
     }
-    if (!confirm(`将恢复 ${parsed.exercises.length} 个动作、${parsed.plans.length} 个课程、${parsed.sessions.length} 条训练记录。恢复会覆盖当前全部数据，确定继续吗？`)) return;
+    const bodyCount = Array.isArray(parsed.bodyStats) ? parsed.bodyStats.length : 0;
+    if (!confirm(`将恢复 ${parsed.exercises.length} 个动作、${parsed.plans.length} 个课程、${parsed.sessions.length} 条训练记录、${bodyCount} 条身高体重记录。恢复会覆盖当前全部数据，确定继续吗？`)) return;
     for (const name of STORES) await clearStore(name);
     if (Array.isArray(parsed.categories)) {
       await put('meta', { key: 'categories', value: parsed.categories });
@@ -2272,6 +2524,7 @@ async function importJson(file) {
     for (const item of parsed.exercises) if (item && item.id) await put('exercises', item);
     for (const item of parsed.plans) if (item && item.id) await put('plans', item);
     for (const item of parsed.sessions) if (item && item.id) await put('sessions', item);
+    for (const item of parsed.bodyStats || []) if (item && item.id) await put('bodyStats', item);
     showToast('备份恢复成功');
     await refreshCurrentPage();
   } catch (error) {
@@ -2290,7 +2543,7 @@ async function updateStorageStatus() {
   }
 }
 
-/* ===================== DeepSeek 一键导出 ===================== */
+/* ===================== 运动数据分享导出 ===================== */
 async function copyText(text) {
   try {
     if (navigator.clipboard && window.isSecureContext) {
@@ -2315,67 +2568,91 @@ async function copyText(text) {
   }
 }
 
-async function exportDeepseek() {
-  const [exercises, plans, sessions] = await Promise.all([
-    getAll('exercises'), getAll('plans'), getAll('sessions')
+const SHARE_RANGE_LABELS = { today: '今日', week: '本周', month: '本月', year: '本年', all: '全部' };
+
+function getRangeStart(range) {
+  const now = new Date();
+  const start = new Date(now);
+  if (range === 'today') {
+    start.setHours(0, 0, 0, 0);
+  } else if (range === 'week') {
+    start.setHours(0, 0, 0, 0);
+    start.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+  } else if (range === 'month') {
+    start.setDate(1);
+    start.setHours(0, 0, 0, 0);
+  } else if (range === 'year') {
+    start.setMonth(0, 1);
+    start.setHours(0, 0, 0, 0);
+  } else {
+    return null;
+  }
+  return start.getTime();
+}
+
+function sessionShareLine(s) {
+  if (s.kind === 'checkin') {
+    const c = s.checkin || {};
+    return s.checkinType === 'run'
+      ? `${dateLabel(s.startedAt)} | 跑步打卡 | ${fmtPlainNum(c.minutes)}分钟 ${fmtPlainNum(c.distanceKm)}公里${c.heartRate ? ` 心率${c.heartRate}` : ''}${c.height ? ` 身高${c.height}cm` : ''}${c.weight ? ` 体重${c.weight}kg` : ''}`
+      : `${dateLabel(s.startedAt)} | ${s.planName || '运动打卡'} | ${fmtPlainNum(c.sets)}组×${fmtPlainNum(c.reps)}次 ${fmtPlainNum(c.minutes)}分钟${c.weightKg ? ` ${c.weightKg}kg` : ''}${c.note ? ` 备注:${c.note}` : ''}`;
+  }
+  return `${dateLabel(s.startedAt)} | ${s.planName || '自由训练'} | ${Math.round((s.durationSeconds || 0) / 60)}分钟 | ${(s.exercises || []).map(e => `${e.name}(${(e.sets || []).length}组)`).join('、') || '无动作明细'}`;
+}
+
+async function exportShareData(range = 'all') {
+  const [exercises, plans, sessions, body] = await Promise.all([
+    getAll('exercises'), getAll('plans'), getAll('sessions'), getCurrentBody()
   ]);
+  const cutoff = getRangeStart(range);
+  const scoped = (cutoff ? sessions.filter(s => new Date(s.startedAt).getTime() >= cutoff) : sessions)
+    .sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt));
+  const shown = scoped.slice(-50);
+  const rangeLabel = SHARE_RANGE_LABELS[range] || '全部';
   const exerciseMap = new Map(exercises.map(e => [e.id, e]));
+
   const lines = [
-    `【FitLog v${APP_VERSION} 训练数据】`,
+    `【FitLog v${APP_VERSION} 运动数据 · ${rangeLabel}】`,
     `导出时间：${new Date().toLocaleString('zh-CN')}`,
-    `动作库：${exercises.length} 个动作 · 课程：${plans.length} 套 · 训练记录：${sessions.length} 条`,
+    `数据范围：${rangeLabel} · 训练与打卡记录 ${scoped.length} 条${scoped.length > shown.length ? `（以下为最近 ${shown.length} 条）` : ''}`,
     `------------------------`,
-    `一、动作库`,
-    ...exercises.map((e, i) => `${i + 1}. ${e.name}（${e.muscle}）| ${e.pureVideo ? '纯视频跟练，统计参数暂不启用' : `${typeLabel(e.type)} | 默认 ${e.defaultTarget?.sets ?? 3}组 × ${e.defaultTarget?.target ?? 12} | 休息 ${e.defaultTarget?.restSeconds ?? 45}秒`}`),
+    `一、身高体重`,
+    `当前：身高 ${fmtBodyNum(body.height)}cm，体重 ${fmtBodyNum(body.weight)}kg${body.updatedAt ? `（最后更新 ${dateLabel(body.updatedAt)}）` : ''}`,
+    `近期体重：${weightPointsFrom(body.list).slice(-10).map(p => `${p.label} ${p.value}kg`).join('、') || '暂无'}`,
     `------------------------`,
-    `二、训练课程`,
+    `二、动作库（${exercises.length} 个）`,
+    ...exercises.map((e, i) => `${i + 1}. ${e.name}（${e.muscle}）| ${e.pureVideo ? `纯视频跟练，${e.videoStats?.sets || 1}组 × ${e.videoStats?.durationSeconds || 0}秒${e.videoStats?.note ? ` 备注:${e.videoStats.note}` : ''}` : `${typeLabel(e.type)} | 默认 ${e.defaultTarget?.sets ?? 3}组 × ${e.defaultTarget?.target ?? 12} | 休息 ${e.defaultTarget?.restSeconds ?? 45}秒`}`),
+    `------------------------`,
+    `三、训练课程（${plans.length} 套）`,
     ...plans.map((p, i) => `${i + 1}. ${p.name}：${(p.items || []).map(item => {
       const e = exerciseMap.get(item.exerciseId);
       return `${e?.name || '已删除动作'} ${item.sets}组×${item.target}${e?.type === 'time' ? '秒' : '次'}/休息${item.restSeconds}秒`;
     }).join('、')}`),
     `------------------------`,
-    `三、最近训练`,
-    ...sessions.slice(-5).map(s => `${dateLabel(s.startedAt)} | ${s.planName || '自由训练'} | ${Math.round((s.durationSeconds || 0) / 60)}分钟 | ${(s.exercises || []).length}个动作`),
+    `四、训练与打卡记录（${rangeLabel}，${shown.length} 条）`,
+    ...shown.map((s, i) => `${i + 1}. ${sessionShareLine(s)}`),
     `------------------------`,
-    `请作为专业健身教练，基于以上动作库、课程编排与训练记录，分析训练强度、肌群覆盖和恢复安排是否合理，并给出具体改进建议：`
+    `请作为专业健身教练，基于以上身高体重、动作库、课程编排、训练与打卡记录，分析训练强度、肌群覆盖、有氧安排和身体变化趋势是否合理，并给出具体改进建议：`
   ];
 
   const text = lines.join('\n');
   const copied = await copyText(text);
-  showToast(copied ? '训练数据已复制，正在调起系统分享…' : '复制受限，请在分享面板中手动选择文本');
-  openDeepseek(text);
+  showToast(copied ? '数据已复制，正在调起系统分享…' : '复制受限，请在分享面板中手动选择文本');
+  shareText(text);
 }
 
-// 优先调起系统分享面板：DeepSeek 支持接收文本分享，点一下即把数据带入输入框
-// 绝不再跳 Google Play 商店页（国内不可用）
-function openDeepseek(text) {
+// 调起系统分享面板，由用户选择任意 AI 助手；不再强跳固定网站
+function shareText(text) {
   if (navigator.share) {
-    navigator.share({
-      title: 'FitLog 训练数据',
-      text: text || ''
-    }).then(() => {
-      showToast('已调起系统分享，请在面板中选择 DeepSeek');
-    }).catch(err => {
-      if (err && err.name === 'AbortError') {
-        showToast('已取消分享，数据仍在剪贴板中');
-      } else {
-        showToast('系统分享不可用，已为你打开网页版');
-        openDeepseekWeb();
-      }
-    });
+    navigator.share({ title: 'FitLog 运动数据', text: text || '' })
+      .then(() => showToast('已调起系统分享，可选择任意 AI 助手'))
+      .catch(err => {
+        if (err && err.name === 'AbortError') showToast('已取消分享，数据仍在剪贴板中');
+        else showToast('系统分享不可用，数据已复制，请手动粘贴到 AI 助手');
+      });
     return;
   }
-  showToast('当前浏览器不支持系统分享，已打开网页版');
-  openDeepseekWeb();
-}
-
-function openDeepseekWeb() {
-  const opened = window.open('https://chat.deepseek.com/', '_blank');
-  if (opened) {
-    try { opened.opener = null; } catch (_) {}
-  } else {
-    showToast('弹窗被拦截，请手动访问 chat.deepseek.com 并粘贴');
-  }
+  showToast('数据已复制，请打开任意 AI 助手粘贴');
 }
 
 async function refreshCurrentPage() {
@@ -2494,6 +2771,19 @@ function bindEvents() {
     planSearchTimer = setTimeout(() => renderPlanEditorLists(), 180);
   });
 
+  // 身高体重
+  $('bodyEditBtn').addEventListener('click', openBodyStatsDialog);
+  $('bodyChartWrap').addEventListener('click', openBodyDetailDialog);
+  $('openBodyDetailBtn').addEventListener('click', () => { closeDialog('bodyStatsDialog'); openBodyDetailDialog(); });
+  $('saveBodyBtn').addEventListener('click', saveBodyStatsFromDialog);
+  $('bodyDetailAddBtn').addEventListener('click', () => { closeDialog('bodyDetailDialog'); openBodyStatsDialog(); });
+
+  // 运动打卡
+  $('quickCheckinBtn').addEventListener('click', openCheckinDialog);
+  $('quickBodyBtn').addEventListener('click', openBodyStatsDialog);
+  $('checkinType').addEventListener('change', toggleCheckinFields);
+  $('saveCheckinBtn').addEventListener('click', saveCheckin);
+
   $('toggleQuickCustomBtn').addEventListener('click', () => {
     const panel = $('quickCustomPanel');
     const isHidden = panel.classList.toggle('hidden');
@@ -2579,7 +2869,13 @@ function bindEvents() {
     await exportJson();
   });
   $('exportCsvBtn').addEventListener('click', exportCsv);
-  $('btnDeepseekExport').addEventListener('click', exportDeepseek);
+  $('btnShareExport').addEventListener('click', () => openDialog('shareDialog'));
+  $('shareDialog').addEventListener('click', async e => {
+    const rangeBtn = e.target.closest('[data-share-range]');
+    if (!rangeBtn) return;
+    closeDialog('shareDialog');
+    await exportShareData(rangeBtn.dataset.shareRange);
+  });
   $('importJsonInput').addEventListener('change', event => importJson(event.target.files?.[0]));
 
   const testBeepBtn = $('btnTestBeep');
