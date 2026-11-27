@@ -14,7 +14,7 @@
   <header class="topbar">
     <div class="brand"><div class="brand-mark">F</div><div><strong>FitLog</strong><small>我的私人运动教练</small></div></div>
     <div class="topbar-actions">
-      <span class="version-badge" id="appVersion">v1.21</span>
+      <span class="version-badge" id="appVersion">v1.22</span>
       <button id="installBtn" class="install-btn hidden" type="button">安装</button>
     </div>
   </header>
@@ -50,8 +50,8 @@
       <div class="quick-grid">
         <button class="quick-card" data-go="exercises"><span class="quick-icon">▤</span><b>动作库</b><small>要领与节拍</small></button>
         <button class="quick-card" id="quickCheckinBtn"><span class="quick-icon">✓</span><b>运动打卡</b><small>跑步或其他</small></button>
-        <button class="quick-card" data-go="history"><span class="quick-icon">◷</span><b>训练历史</b><small>回顾记录</small></button>
-        <button class="quick-card" data-go="data"><span class="quick-icon">⇧</span><b>数据备份</b><small>导出或恢复</small></button>
+        <button class="quick-card" id="quickExportShareBtn"><span class="quick-icon">✦</span><b>导出数据并分享</b><small>下载、复制并分享</small></button>
+        <button class="quick-card" id="quickMoodBtn"><span class="quick-icon">☺</span><b>心情记录</b><small>心情与训练状态</small></button>
       </div>
       <div class="section-heading"><h2>最近训练</h2><button class="text-btn" data-go="history">全部记录</button></div>
       <div id="recentSessions" class="list-card empty-state">还没有训练记录，完成第一次训练后会显示在这里。</div>
@@ -145,7 +145,7 @@
       </div>
       <div class="info-card">
         <b>版本信息</b>
-        <p>FitLog <span id="appVersionData">v1.21</span> · PWA · IndexedDB 本地存储</p>
+        <p>FitLog <span id="appVersionData">v1.22</span> · PWA · IndexedDB 本地存储</p>
         <p id="storageStatus">正在检查本地数据库……</p>
       </div>
     </section>
@@ -192,7 +192,7 @@
       <h2>选择导出与分享范围</h2>
       <button type="button" class="icon-btn" data-close="shareDialog">×</button>
     </div>
-    <p class="dialog-hint">将所选周期的训练明细导出为 CSV 文件（同一动作合并为一行，含身高体重，不含动作库和课程），同时复制到剪贴板并调起系统分享面板，可发给任意 AI 助手。</p>
+    <p class="dialog-hint">将所选周期的训练明细导出为 CSV 文件（同一动作合并为一行，含身高体重，不含动作库和课程），同时复制到剪贴板并调起系统分享面板。心情/状态记录仅在「心情记录」里勾选后才一并导出。</p>
     <div class="share-range-list">
       <button type="button" class="share-range-btn" data-share-range="today"><b>今日</b><small>仅今天的记录</small></button>
       <button type="button" class="share-range-btn" data-share-range="week"><b>本周</b><small>本周一至今</small></button>
@@ -243,6 +243,35 @@
     </div>
 
     <div class="dialog-actions"><button type="button" class="primary-btn" id="saveCheckinBtn">保存打卡</button></div>
+  </dialog>
+
+  <!-- 心情 / 训练状态记录 -->
+  <dialog id="moodDialog" class="app-dialog">
+    <div class="dialog-head">
+      <h2>心情记录</h2>
+      <button type="button" class="icon-btn" data-close="moodDialog">×</button>
+    </div>
+    <p class="dialog-hint">随手记下当时的心情、训练状态，或任何想跟踪的身体数据。保存时会自动记录时间。</p>
+    <label>记录内容
+      <textarea id="moodText" rows="5" maxlength="1000" placeholder="例如：今天腿部训练状态不错，睡眠一般，膝盖轻微酸胀……"></textarea>
+    </label>
+    <div class="mood-options">
+      <label class="mood-option-check"><input id="moodExportToggle" type="checkbox"> 导出训练数据时包含心情/状态记录</label>
+      <div class="mood-option-buttons">
+        <button type="button" class="small-btn" id="viewMoodHistoryBtn">查看历史心情</button>
+        <button type="button" class="small-btn" id="exportMoodBtn">单独导出状态记录</button>
+      </div>
+    </div>
+    <div class="dialog-actions"><button type="button" class="primary-btn" id="saveMoodBtn">保存记录</button></div>
+  </dialog>
+
+  <dialog id="moodHistoryDialog" class="app-dialog">
+    <div class="dialog-head">
+      <h2>历史心情</h2>
+      <button type="button" class="icon-btn" data-close="moodHistoryDialog">×</button>
+    </div>
+    <div id="moodHistoryList" class="stack-list"></div>
+    <div class="dialog-actions"><button type="button" class="secondary-btn" data-close="moodHistoryDialog">关闭</button></div>
   </dialog>
 
   <!-- 添加 / 编辑动作弹窗 -->
@@ -355,7 +384,7 @@
   </dialog>
 
   <!-- 新建 / 编辑课程弹窗 -->
-  <dialog id="planDialog" class="app-dialog">
+  <dialog id="planDialog" class="app-dialog plan-dialog">
     <form id="planForm" method="dialog">
       <div class="dialog-head">
         <h2 id="planDialogTitle">新建课程</h2>

@@ -1,12 +1,12 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.21';
+const APP_VERSION = '1.22';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
-const DB_VERSION = 3;
-const STORES = ['exercises', 'plans', 'sessions', 'meta', 'bodyStats'];
+const DB_VERSION = 4;
+const STORES = ['exercises', 'plans', 'sessions', 'meta', 'bodyStats', 'moodNotes'];
 const DEFAULT_CATEGORIES = ['臀腿', '腰腹', '胸', '背', '肩', '手臂', '核心', '臀部', '腿部', '全身', '其他'];
 
 // 阶段默认配色：呼气红 / 保持停顿黄 / 吸气绿（均可在编辑器里自定义）
@@ -177,6 +177,7 @@ function openDatabase() {
       if (!database.objectStoreNames.contains('sessions')) database.createObjectStore('sessions', { keyPath: 'id' });
       if (!database.objectStoreNames.contains('meta')) database.createObjectStore('meta', { keyPath: 'key' });
       if (!database.objectStoreNames.contains('bodyStats')) database.createObjectStore('bodyStats', { keyPath: 'id' });
+      if (!database.objectStoreNames.contains('moodNotes')) database.createObjectStore('moodNotes', { keyPath: 'id' });
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error || new Error('数据库打开失败'));
@@ -230,6 +231,54 @@ async function saveBodyStats({ height, weight, source = 'manual', recordedAt } =
   };
   await put('bodyStats', record);
   return record;
+}
+
+/* ===== 心情 / 训练状态记录 ===== */
+const MOOD_EXPORT_KEY = 'fitlog-mood-include-export';
+
+function moodExportIncluded() {
+  try { return localStorage.getItem(MOOD_EXPORT_KEY) === '1'; } catch (_) { return false; }
+}
+
+function setMoodExportIncluded(enabled) {
+  try { localStorage.setItem(MOOD_EXPORT_KEY, enabled ? '1' : '0'); } catch (_) {}
+}
+
+async function getMoodNotes() {
+  const list = await getAll('moodNotes');
+  return list.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+}
+
+async function saveMoodNoteFromDialog() {
+  const input = $('moodText');
+  const content = (input?.value || '').trim();
+  if (!content) { showToast('写点内容再保存吧'); return; }
+  await put('moodNotes', { id: makeId(), content, createdAt: nowIso() });
+  input.value = '';
+  showToast('已保存，保存时间已自动记录');
+}
+
+async function renderMoodHistory() {
+  const notes = await getMoodNotes();
+  const list = $('moodHistoryList');
+  if (!list) return;
+  list.innerHTML = notes.length
+    ? notes.map(n => `<article class="item-card"><div class="session-date">${escapeHtml(dateLabel(n.createdAt))}</div><div class="session-exercises">${escapeHtml(n.content)}</div><div class="card-actions"><button class="small-btn danger-text" data-mood-delete="${escapeHtml(n.id)}">删除</button></div></article>`).join('')
+    : '<div class="list-card empty-state">还没有心情记录。</div>';
+}
+
+async function openMoodDialog() {
+  const toggle = $('moodExportToggle');
+  if (toggle) toggle.checked = moodExportIncluded();
+  openDialog('moodDialog');
+}
+
+async function exportMoodNotes() {
+  const notes = await getMoodNotes();
+  if (!notes.length) { showToast('还没有心情记录可导出'); return; }
+  const rows = [['记录时间', '心情/训练状态记录'], ...notes.map(n => [dateLabel(n.createdAt), n.content])];
+  downloadFile(`fitlog-mood-${new Date().toISOString().slice(0, 10)}.csv`, '\uFEFF' + csvSerialize(rows), 'text/csv;charset=utf-8');
+  showToast('心情记录CSV已导出到下载文件夹');
 }
 
 function showToast(message) {
@@ -826,7 +875,7 @@ function buildWeightSvg(points, withDates = false) {
   const valid = points.filter(p => Number(p.value) > 0);
   if (!valid.length) return '<div class="empty-state" style="padding:16px 6px">还没有体重记录，点「更新」添加第一条。</div>';
   const w = 340;
-  const h = withDates ? 175 : 84;
+  const h = withDates ? 175 : 68;
   const padL = 32, padR = 12, padT = 12, padB = withDates ? 26 : 10;
   const plotW = w - padL - padR;
   const plotH = h - padT - padB;
@@ -2473,13 +2522,14 @@ async function exportJson() {
   });
   const backup = {
     app: 'FitLog',
-    version: 3,
+    version: 4,
     exportedAt: nowIso(),
     categories: await getCategories(),
     exercises,
     plans: await getAll('plans'),
     sessions: await getAll('sessions'),
-    bodyStats: await getAll('bodyStats')
+    bodyStats: await getAll('bodyStats'),
+    moodNotes: await getAll('moodNotes')
   };
   downloadFile(`fitlog-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(backup, null, 2), 'application/json');
   try { localStorage.setItem(LAST_BACKUP_KEY, String(Date.now())); } catch (_) {}
@@ -2524,7 +2574,7 @@ function setDetailText(set) {
 }
 
 // 返回二维数组：一次训练 + 一个动作 = 一行，各组数据汇总到列里
-function buildTrainingCsvRows(sessions, body = null) {
+function buildTrainingCsvRows(sessions, body = null, moods = []) {
   const rows = [TRAINING_CSV_HEADER.slice()];
   const currentHeight = body?.height ?? '';
   const currentWeight = body?.weight ?? '';
@@ -2573,6 +2623,14 @@ function buildTrainingCsvRows(sessions, body = null) {
       ]);
     });
   });
+
+  // 勾选后才把心情/训练状态记录并入同一张 CSV 表，不动作列留空
+  [...moods].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)).forEach(m => {
+    rows.push([
+      dateLabel(m.createdAt), '心情记录', '心情/状态', '心情记录',
+      '', '', '', '', '', '', '', m.content || '', '', ''
+    ]);
+  });
   return rows;
 }
 
@@ -2584,7 +2642,8 @@ async function importJson(file) {
       throw new Error('文件格式不正确，无法识别为FitLog备份');
     }
     const bodyCount = Array.isArray(parsed.bodyStats) ? parsed.bodyStats.length : 0;
-    if (!confirm(`将恢复 ${parsed.exercises.length} 个动作、${parsed.plans.length} 个课程、${parsed.sessions.length} 条训练记录、${bodyCount} 条身高体重记录。恢复会覆盖当前全部数据，确定继续吗？`)) return;
+    const moodCount = Array.isArray(parsed.moodNotes) ? parsed.moodNotes.length : 0;
+    if (!confirm(`将恢复 ${parsed.exercises.length} 个动作、${parsed.plans.length} 个课程、${parsed.sessions.length} 条训练记录、${bodyCount} 条身高体重记录、${moodCount} 条心情记录。恢复会覆盖当前全部数据，确定继续吗？`)) return;
     for (const name of STORES) await clearStore(name);
     if (Array.isArray(parsed.categories)) {
       await put('meta', { key: 'categories', value: parsed.categories });
@@ -2593,6 +2652,7 @@ async function importJson(file) {
     for (const item of parsed.plans) if (item && item.id) await put('plans', item);
     for (const item of parsed.sessions) if (item && item.id) await put('sessions', item);
     for (const item of parsed.bodyStats || []) if (item && item.id) await put('bodyStats', item);
+    for (const item of parsed.moodNotes || []) if (item && item.id) await put('moodNotes', item);
     showToast('备份恢复成功');
     await refreshCurrentPage();
   } catch (error) {
@@ -2663,7 +2723,10 @@ async function exportShareData(range = 'all') {
   const cutoff = getRangeStart(range);
   const scoped = (cutoff ? sessions.filter(s => new Date(s.startedAt).getTime() >= cutoff) : sessions);
   const rangeLabel = SHARE_RANGE_LABELS[range] || '全部';
-  const rows = buildTrainingCsvRows(scoped, body);
+  const moods = moodExportIncluded()
+    ? (await getMoodNotes()).filter(m => !cutoff || new Date(m.createdAt).getTime() >= cutoff)
+    : [];
+  const rows = buildTrainingCsvRows(scoped, body, moods);
   if (rows.length === 1) {
     showToast(`${rangeLabel}没有训练记录，无需导出`);
     return;
@@ -2815,6 +2878,19 @@ function bindEvents() {
 
   // 运动打卡
   $('quickCheckinBtn').addEventListener('click', openCheckinDialog);
+  $('quickMoodBtn').addEventListener('click', openMoodDialog);
+  $('saveMoodBtn').addEventListener('click', saveMoodNoteFromDialog);
+  $('viewMoodHistoryBtn').addEventListener('click', async () => { await renderMoodHistory(); openDialog('moodHistoryDialog'); });
+  $('exportMoodBtn').addEventListener('click', exportMoodNotes);
+  $('moodExportToggle').addEventListener('change', e => { setMoodExportIncluded(e.target.checked); showToast(e.target.checked ? '导出训练数据时会包含心情/状态记录' : '导出训练数据时将不含心情/状态记录'); });
+  $('moodHistoryList').addEventListener('click', async e => {
+    const del = e.target.closest('[data-mood-delete]');
+    if (!del) return;
+    if (!confirm('删除这条心情记录？')) return;
+    await remove('moodNotes', del.dataset.moodDelete);
+    await renderMoodHistory();
+    showToast('已删除心情记录');
+  });
   $('checkinType').addEventListener('change', toggleCheckinFields);
   $('saveCheckinBtn').addEventListener('click', saveCheckin);
 
@@ -2912,6 +2988,7 @@ function bindEvents() {
     await exportJson();
   });
   $('btnExportShare').addEventListener('click', () => openDialog('shareDialog'));
+  $('quickExportShareBtn').addEventListener('click', () => openDialog('shareDialog'));
   $('shareDialog').addEventListener('click', async e => {
     const rangeBtn = e.target.closest('[data-share-range]');
     if (!rangeBtn) return;
