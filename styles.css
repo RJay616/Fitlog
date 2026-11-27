@@ -110,7 +110,8 @@ main{max-width:760px;margin:0 auto;padding:18px 16px 28px}
 .secondary-btn{border:1px solid var(--line);background:#fff;border-radius:12px;padding:11px 16px;color:#526174}
 
 /* 课程编辑：全屏显示，底部按钮常驻可见 */
-.app-dialog.plan-dialog{width:100vw;max-width:none;height:100dvh;max-height:100dvh;inset:0;margin:0;padding:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;background:#fff}
+.app-dialog.plan-dialog:not([open]){display:none}
+.app-dialog.plan-dialog[open]{width:100vw;max-width:none;height:100dvh;max-height:100dvh;inset:0;margin:0;padding:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;background:#fff}
 .app-dialog.plan-dialog form{display:flex;flex-direction:column;gap:10px;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:0 16px calc(10px + env(safe-area-inset-bottom))}
 .app-dialog.plan-dialog .dialog-head{position:sticky;top:0;z-index:2;background:#fff;padding:16px 0 10px;margin-bottom:0}
 .app-dialog.plan-dialog .dialog-actions{position:sticky;bottom:0;z-index:2;background:#fff;padding:10px 0 calc(6px + env(safe-area-inset-bottom));margin-top:auto;border-top:1px solid var(--line)}
@@ -191,6 +192,7 @@ main{max-width:760px;margin:0 auto;padding:18px 16px 28px}
 .file-label input{position:absolute;inset:0;opacity:0;width:100%;cursor:pointer}
 
 /* 训练执行器 */
+.runner-dialog:not([open]){display:none}
 .runner-dialog{border:0;border-radius:0;padding:0;position:fixed;inset:0;width:100%;max-width:none;margin:0;background:#f5f7fb;max-height:100dvh;height:100dvh;overflow:hidden;display:flex;flex-direction:column}
 .runner-top{background:var(--navy);color:#fff;padding:max(12px,env(safe-area-inset-top)) 20px 12px;display:flex;justify-content:space-between;align-items:center;gap:10px;font-weight:800;flex:0 0 auto;position:relative;z-index:2}
 .runner-top>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
