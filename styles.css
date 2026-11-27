@@ -257,10 +257,13 @@ main{max-width:760px;margin:0 auto;padding:18px 16px 28px}
 .topbar-actions{display:flex;align-items:center;gap:9px}
 .version-badge{background:#263f5a;border:1px solid #6d8299;color:#dbe9f7;border-radius:20px;padding:5px 10px;font-size:11px;font-weight:700}
 .help-btn{border:1px solid #6d8299;background:#263f5a;color:#dbe9f7;border-radius:50%;width:26px;height:26px;padding:0;font-size:14px;font-weight:700;line-height:1;display:grid;place-items:center;cursor:pointer}
-.help-dialog .dialog-head{position:sticky;top:-20px;z-index:3;background:#fff;padding:20px 0 10px;margin:-20px 0 6px;box-shadow:0 1px 0 var(--line)}
+.help-dialog .dialog-head{position:sticky;top:-20px;z-index:3;background:#fff;padding:20px 0 6px;margin:-20px 0 10px;box-shadow:0 1px 0 var(--line)}
+.help-dialog .help-head{justify-content:flex-end;min-height:32px}
 .help-body{font-size:12px;color:var(--muted);line-height:1.7}
-.help-declare{margin:0 0 14px;padding:12px;background:#f0f4f9;border-radius:12px;color:#455468;line-height:1.75}
-.help-title{font-size:14px;font-weight:700;color:var(--ink);margin:0 0 8px}
+.help-sec-title{font-size:15px;font-weight:700;color:var(--ink);margin:0 0 8px}
+.help-declare{margin:0 0 16px;padding:12px;background:#f0f4f9;border-radius:12px;color:#455468;line-height:1.75}
+.help-declare .help-sec-text{margin:0}
+.help-section{padding:0 2px}
 .help-list{margin:0;padding-left:20px}
 .help-list li{margin-bottom:8px;line-height:1.7}
 
