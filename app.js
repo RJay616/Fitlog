@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.20';
+const APP_VERSION = '1.21';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -2576,15 +2576,6 @@ function buildTrainingCsvRows(sessions, body = null) {
   return rows;
 }
 
-async function exportCsv() {
-  const [sessions, body] = await Promise.all([getAll('sessions'), getCurrentBody()]);
-  const rows = buildTrainingCsvRows(sessions, body);
-  if (rows.length === 1) { showToast('还没有训练记录可导出'); return; }
-  const csv = csvSerialize(rows, true);
-  downloadFile(`fitlog-training-${new Date().toISOString().slice(0, 10)}.csv`, csv, 'text/csv;charset=utf-8');
-  showToast('CSV明细已导出（同一动作已合并为一行）');
-}
-
 async function importJson(file) {
   if (!file) return;
   try {
@@ -2674,12 +2665,14 @@ async function exportShareData(range = 'all') {
   const rangeLabel = SHARE_RANGE_LABELS[range] || '全部';
   const rows = buildTrainingCsvRows(scoped, body);
   if (rows.length === 1) {
-    showToast(`${rangeLabel}没有训练记录，无需分享`);
+    showToast(`${rangeLabel}没有训练记录，无需导出`);
     return;
   }
   const text = csvSerialize(rows);
+  const safeLabel = String(rangeLabel).replace(/[\\/:*?"<>|]/g, '');
+  downloadFile(`fitlog-training-${safeLabel}-${new Date().toISOString().slice(0, 10)}.csv`, '\uFEFF' + text, 'text/csv;charset=utf-8');
   const copied = await copyText(text);
-  showToast(copied ? `${rangeLabel}训练明细CSV已复制，正在调起系统分享…` : '复制受限，请在分享面板中手动选择文本');
+  showToast(copied ? `${rangeLabel}训练数据已下载并复制，正在调起系统分享…` : `${rangeLabel}训练数据已下载，复制受限请在分享面板中手动选择文本`);
   shareText(text);
 }
 
@@ -2918,8 +2911,7 @@ function bindEvents() {
     closeDialog('backupReminderDialog');
     await exportJson();
   });
-  $('exportCsvBtn').addEventListener('click', exportCsv);
-  $('btnShareExport').addEventListener('click', () => openDialog('shareDialog'));
+  $('btnExportShare').addEventListener('click', () => openDialog('shareDialog'));
   $('shareDialog').addEventListener('click', async e => {
     const rangeBtn = e.target.closest('[data-share-range]');
     if (!rangeBtn) return;
