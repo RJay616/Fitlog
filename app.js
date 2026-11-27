@@ -1,7 +1,7 @@
 'use strict';
 
 // 版本规范：小迭代 1.1、1.2、1.3；大改版 2.1、2.2
-const APP_VERSION = '1.19';
+const APP_VERSION = '1.20';
 const PAGE_STORAGE_KEY = 'fitlog-current-page';
 
 const DB_NAME = 'fitlog-db';
@@ -1382,6 +1382,7 @@ async function renderPlanEditorLists() {
             <div class="selected-plan-ops">
               <button type="button" class="mini-op-btn" data-move-up="${idx}" ${idx === 0 ? 'disabled' : ''}>↑</button>
               <button type="button" class="mini-op-btn" data-move-down="${idx}" ${idx === draftPlanItems.length - 1 ? 'disabled' : ''}>↓</button>
+              <button type="button" class="mini-op-btn" data-add-again="${idx}" title="在课程中再安排一次该动作">+1次</button>
               <button type="button" class="mini-op-btn" data-remove-sel="${idx}">移除</button>
             </div>
           </div>
@@ -2499,13 +2500,89 @@ function checkBackupReminder(force = false) {
   openDialog('backupReminderDialog');
 }
 
+/* ===== 训练明细 CSV：同一次训练的同一动作只占一行 ===== */
+const TRAINING_CSV_HEADER = ['训练日期', '课程', '动作类别', '动作', '组数', '总次数', '左侧次数', '右侧次数', '总时长秒', '重量kg', '分组明细', '备注', '身高cm', '体重kg'];
+
+function csvCell(value) {
+  return `"${String(value ?? '').replace(/"/g, '""')}"`;
+}
+
+function csvSerialize(rows, withBom = false) {
+  const text = rows.map(row => row.map(csvCell).join(',')).join('\r\n');
+  return (withBom ? '\uFEFF' : '') + text;
+}
+
+function setDetailText(set) {
+  if (set.videoNote != null || set.weightMode != null) {
+    const parts = [`视频 ${set.durationSeconds ?? 0}秒`, `${set.plannedSets ?? 1}组`, set.weightMode === 'weighted' ? `负重 ${set.weightKg ?? 0}kg` : '自重'];
+    if (set.videoNote) parts.push(String(set.videoNote));
+    return `第${set.setNumber}组 ${parts.join(' · ')}`;
+  }
+  if (set.leftReps != null) return `第${set.setNumber}组 左${set.leftReps}次/右${set.rightReps ?? 0}次`;
+  if (set.reps != null) return `第${set.setNumber}组 ${set.reps}次`;
+  return `第${set.setNumber}组 ${set.durationSeconds ?? 0}秒`;
+}
+
+// 返回二维数组：一次训练 + 一个动作 = 一行，各组数据汇总到列里
+function buildTrainingCsvRows(sessions, body = null) {
+  const rows = [TRAINING_CSV_HEADER.slice()];
+  const currentHeight = body?.height ?? '';
+  const currentWeight = body?.weight ?? '';
+  const sorted = [...sessions].sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt));
+
+  sorted.forEach(s => {
+    const date = dateLabel(s.startedAt);
+    const planName = s.planName || (s.kind === 'checkin' ? '运动打卡' : '自由训练');
+
+    if (s.kind === 'checkin') {
+      const c = s.checkin || {};
+      const isRun = s.checkinType === 'run';
+      const name = isRun ? '跑步打卡' : (c.name || '运动打卡');
+      const detail = isRun
+        ? `距离 ${fmtPlainNum(c.distanceKm)}公里 · 平均心率 ${fmtPlainNum(c.heartRate)}次/分`
+        : (c.note || '自定义运动打卡');
+      rows.push([
+        date, planName, isRun ? '跑步打卡' : '运动打卡', name,
+        isRun ? 1 : (c.sets ?? ''), isRun ? '' : (c.reps ?? ''), '', '',
+        c.minutes != null ? Math.round(Number(c.minutes) * 60) : Math.round(s.durationSeconds || 0),
+        isRun ? '' : (c.weightKg ?? ''), '', detail,
+        c.height ?? currentHeight, c.weight ?? currentWeight
+      ]);
+      return;
+    }
+
+    const grouped = new Map();
+    (s.exercises || []).forEach(e => {
+      const key = `${e.exerciseId || ''}|${e.name || ''}`;
+      if (!grouped.has(key)) grouped.set(key, { name: e.name || '', type: e.type, sets: [] });
+      grouped.get(key).sets.push(...(e.sets || []));
+    });
+
+    grouped.forEach(e => {
+      const sets = e.sets || [];
+      const sum = key => sets.reduce((total, set) => total + (Number(set[key]) || 0), 0);
+      const weights = [...new Set(sets.map(set => Number(set.weightKg) || 0).filter(Boolean))];
+      const notes = sets.map(set => set.videoNote).filter(Boolean);
+      const kind = sets.some(set => set.videoNote != null || set.weightMode != null) ? '纯视频跟练' : typeLabel(e.type);
+      rows.push([
+        date, planName, kind, e.name, sets.length,
+        sum('reps') || '', sum('leftReps') || '', sum('rightReps') || '',
+        sum('durationSeconds') || '', weights.join(' / ') || '',
+        sets.map(setDetailText).join('；'), notes.join('；'),
+        currentHeight, currentWeight
+      ]);
+    });
+  });
+  return rows;
+}
+
 async function exportCsv() {
-  const sessions = await getAll('sessions');
-  const rows = [['训练日期', '课程', '动作', '组数', '组序号', '次数', '左侧次数', '右侧次数', '时长秒', '重量kg']];
-  sessions.forEach(s => (s.exercises || []).forEach(e => (e.sets || []).forEach(set => rows.push([s.startedAt, s.planName || '', e.name, (e.sets || []).length, set.setNumber, set.reps ?? '', set.leftReps ?? '', set.rightReps ?? '', set.durationSeconds ?? '', set.weightKg ?? 0]))));
-  const csv = '\uFEFF' + rows.map(row => row.map(value => `"${String(value ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  const [sessions, body] = await Promise.all([getAll('sessions'), getCurrentBody()]);
+  const rows = buildTrainingCsvRows(sessions, body);
+  if (rows.length === 1) { showToast('还没有训练记录可导出'); return; }
+  const csv = csvSerialize(rows, true);
   downloadFile(`fitlog-training-${new Date().toISOString().slice(0, 10)}.csv`, csv, 'text/csv;charset=utf-8');
-  showToast('CSV明细已导出');
+  showToast('CSV明细已导出（同一动作已合并为一行）');
 }
 
 async function importJson(file) {
@@ -2590,54 +2667,19 @@ function getRangeStart(range) {
   return start.getTime();
 }
 
-function sessionShareLine(s) {
-  if (s.kind === 'checkin') {
-    const c = s.checkin || {};
-    return s.checkinType === 'run'
-      ? `${dateLabel(s.startedAt)} | 跑步打卡 | ${fmtPlainNum(c.minutes)}分钟 ${fmtPlainNum(c.distanceKm)}公里${c.heartRate ? ` 心率${c.heartRate}` : ''}${c.height ? ` 身高${c.height}cm` : ''}${c.weight ? ` 体重${c.weight}kg` : ''}`
-      : `${dateLabel(s.startedAt)} | ${s.planName || '运动打卡'} | ${fmtPlainNum(c.sets)}组×${fmtPlainNum(c.reps)}次 ${fmtPlainNum(c.minutes)}分钟${c.weightKg ? ` ${c.weightKg}kg` : ''}${c.note ? ` 备注:${c.note}` : ''}`;
-  }
-  return `${dateLabel(s.startedAt)} | ${s.planName || '自由训练'} | ${Math.round((s.durationSeconds || 0) / 60)}分钟 | ${(s.exercises || []).map(e => `${e.name}(${(e.sets || []).length}组)`).join('、') || '无动作明细'}`;
-}
-
 async function exportShareData(range = 'all') {
-  const [exercises, plans, sessions, body] = await Promise.all([
-    getAll('exercises'), getAll('plans'), getAll('sessions'), getCurrentBody()
-  ]);
+  const [sessions, body] = await Promise.all([getAll('sessions'), getCurrentBody()]);
   const cutoff = getRangeStart(range);
-  const scoped = (cutoff ? sessions.filter(s => new Date(s.startedAt).getTime() >= cutoff) : sessions)
-    .sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt));
-  const shown = scoped.slice(-50);
+  const scoped = (cutoff ? sessions.filter(s => new Date(s.startedAt).getTime() >= cutoff) : sessions);
   const rangeLabel = SHARE_RANGE_LABELS[range] || '全部';
-  const exerciseMap = new Map(exercises.map(e => [e.id, e]));
-
-  const lines = [
-    `【FitLog v${APP_VERSION} 运动数据 · ${rangeLabel}】`,
-    `导出时间：${new Date().toLocaleString('zh-CN')}`,
-    `数据范围：${rangeLabel} · 训练与打卡记录 ${scoped.length} 条${scoped.length > shown.length ? `（以下为最近 ${shown.length} 条）` : ''}`,
-    `------------------------`,
-    `一、身高体重`,
-    `当前：身高 ${fmtBodyNum(body.height)}cm，体重 ${fmtBodyNum(body.weight)}kg${body.updatedAt ? `（最后更新 ${dateLabel(body.updatedAt)}）` : ''}`,
-    `近期体重：${weightPointsFrom(body.list).slice(-10).map(p => `${p.label} ${p.value}kg`).join('、') || '暂无'}`,
-    `------------------------`,
-    `二、动作库（${exercises.length} 个）`,
-    ...exercises.map((e, i) => `${i + 1}. ${e.name}（${e.muscle}）| ${e.pureVideo ? `纯视频跟练，${e.videoStats?.sets || 1}组 × ${e.videoStats?.durationSeconds || 0}秒${e.videoStats?.note ? ` 备注:${e.videoStats.note}` : ''}` : `${typeLabel(e.type)} | 默认 ${e.defaultTarget?.sets ?? 3}组 × ${e.defaultTarget?.target ?? 12} | 休息 ${e.defaultTarget?.restSeconds ?? 45}秒`}`),
-    `------------------------`,
-    `三、训练课程（${plans.length} 套）`,
-    ...plans.map((p, i) => `${i + 1}. ${p.name}：${(p.items || []).map(item => {
-      const e = exerciseMap.get(item.exerciseId);
-      return `${e?.name || '已删除动作'} ${item.sets}组×${item.target}${e?.type === 'time' ? '秒' : '次'}/休息${item.restSeconds}秒`;
-    }).join('、')}`),
-    `------------------------`,
-    `四、训练与打卡记录（${rangeLabel}，${shown.length} 条）`,
-    ...shown.map((s, i) => `${i + 1}. ${sessionShareLine(s)}`),
-    `------------------------`,
-    `请作为专业健身教练，基于以上身高体重、动作库、课程编排、训练与打卡记录，分析训练强度、肌群覆盖、有氧安排和身体变化趋势是否合理，并给出具体改进建议：`
-  ];
-
-  const text = lines.join('\n');
+  const rows = buildTrainingCsvRows(scoped, body);
+  if (rows.length === 1) {
+    showToast(`${rangeLabel}没有训练记录，无需分享`);
+    return;
+  }
+  const text = csvSerialize(rows);
   const copied = await copyText(text);
-  showToast(copied ? '数据已复制，正在调起系统分享…' : '复制受限，请在分享面板中手动选择文本');
+  showToast(copied ? `${rangeLabel}训练明细CSV已复制，正在调起系统分享…` : '复制受限，请在分享面板中手动选择文本');
   shareText(text);
 }
 
@@ -2780,7 +2822,6 @@ function bindEvents() {
 
   // 运动打卡
   $('quickCheckinBtn').addEventListener('click', openCheckinDialog);
-  $('quickBodyBtn').addEventListener('click', openBodyStatsDialog);
   $('checkinType').addEventListener('change', toggleCheckinFields);
   $('saveCheckinBtn').addEventListener('click', saveCheckin);
 
@@ -2817,7 +2858,8 @@ function bindEvents() {
     const upBtn = e.target.closest('[data-move-up]');
     const downBtn = e.target.closest('[data-move-down]');
     const remBtn = e.target.closest('[data-remove-sel]');
-    if (!upBtn && !downBtn && !remBtn) return;
+    const againBtn = e.target.closest('[data-add-again]');
+    if (!upBtn && !downBtn && !remBtn && !againBtn) return;
     syncDraftItemsFromDom();
     if (upBtn) {
       const idx = Number(upBtn.dataset.moveUp);
@@ -2829,6 +2871,14 @@ function bindEvents() {
       const idx = Number(downBtn.dataset.moveDown);
       if (idx < draftPlanItems.length - 1) {
         [draftPlanItems[idx], draftPlanItems[idx + 1]] = [draftPlanItems[idx + 1], draftPlanItems[idx]];
+        await renderPlanEditorLists();
+      }
+    } else if (againBtn) {
+      const idx = Number(againBtn.dataset.addAgain);
+      const source = draftPlanItems[idx];
+      if (source) {
+        draftPlanItems.splice(idx + 1, 0, { ...source });
+        showToast('已再安排一次该动作，可用上下箭头调整间隔');
         await renderPlanEditorLists();
       }
     } else if (remBtn) {
