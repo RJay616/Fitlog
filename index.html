@@ -15,7 +15,7 @@
     <div class="brand"><div class="brand-mark">F</div><div><strong>FitLog</strong><small>我的私人运动教练</small></div></div>
     <div class="topbar-actions">
       <button id="helpBtn" class="help-btn" type="button" title="使用说明" aria-label="使用说明">?</button>
-      <span class="version-badge" id="appVersion">v1.25</span>
+      <span class="version-badge" id="appVersion">v1.26</span>
       <button id="installBtn" class="install-btn hidden" type="button">安装</button>
     </div>
   </header>
@@ -51,8 +51,8 @@
       <div class="quick-grid">
         <button class="quick-card" data-go="plans"><span class="quick-icon">▦</span><b>课程</b><small>编排你的训练</small></button>
         <button class="quick-card" id="quickCheckinBtn"><span class="quick-icon">✓</span><b>运动打卡</b><small>跑步或其他</small></button>
-        <button class="quick-card" id="quickExportShareBtn"><span class="quick-icon">✦</span><b>导出数据并分享</b><small>下载、复制并分享</small></button>
         <button class="quick-card" id="quickMoodBtn"><span class="quick-icon">☺</span><b>心情记录</b><small>心情与训练状态</small></button>
+        <button class="quick-card" id="quickExportShareBtn"><span class="quick-icon">✦</span><b>导出数据并分享</b><small>下载、复制并分享</small></button>
       </div>
       <div class="section-heading"><h2>最近训练</h2><button class="text-btn" data-go="history">全部记录</button></div>
       <div id="recentSessions" class="list-card empty-state">还没有训练记录，完成第一次训练后会显示在这里。</div>
@@ -146,7 +146,7 @@
       </div>
       <div class="info-card">
         <b>版本信息</b>
-        <p>FitLog <span id="appVersionData">v1.25</span> · PWA · IndexedDB 本地存储</p>
+        <p>FitLog <span id="appVersionData">v1.26</span> · PWA · IndexedDB 本地存储</p>
         <p id="storageStatus">正在检查本地数据库……</p>
       </div>
     </section>
@@ -334,16 +334,6 @@
       </div>
 
       <div class="form-section-box">
-        <div class="box-title">默认目标参数（加入课程时自动带入）</div>
-        <div class="form-row-4">
-          <label>组数<input id="exDefaultSets" type="number" min="1" max="20" value="3"></label>
-          <label>次数/秒<input id="exDefaultTarget" type="number" min="1" max="999" value="12"></label>
-          <label>重量kg<input id="exDefaultWeight" type="number" min="0" max="999" step="0.5" value="0"></label>
-          <label>休息秒<input id="exDefaultRest" type="number" min="0" max="600" value="45"></label>
-        </div>
-      </div>
-
-      <div class="form-section-box">
         <div class="box-title">教学视频（本地上传或链接）</div>
         <label class="inline-label pure-video-toggle">
           <span>纯视频跟练（勾选后启用下方统计参数）</span>
@@ -391,10 +381,34 @@
           <span class="box-title">呼吸与节拍节奏引导</span>
           <select id="tempoPresetSelect" class="preset-select">
             <option value="">套用节拍模板…</option>
-            <option value="pushup">俯卧撑（吸气下放3秒 · 呼气上撑1秒）</option>
-            <option value="kegel">凯格尔收缩（呼气收缩3秒 · 吸气放松10秒）</option>
-            <option value="kickback">弹力带后踢（呼气后踢1秒 · 保持2秒 · 吸气回收3秒）</option>
-            <option value="squat">深蹲节奏（吸气下蹲3秒 · 停顿1秒 · 呼气站起1秒）</option>
+            <optgroup label="推撑类">
+              <option value="pushup">俯卧撑</option>
+              <option value="incline">上斜/跪姿俯卧撑</option>
+              <option value="narrow">窄距/钻石俯卧撑</option>
+            </optgroup>
+            <optgroup label="蹲腿类">
+              <option value="squat">深蹲/弓步蹲</option>
+              <option value="wall">靠墙静蹲/提踵</option>
+              <option value="sidekick">侧踢腿</option>
+            </optgroup>
+            <optgroup label="臀髋类">
+              <option value="glute">臀桥/顶髋</option>
+              <option value="kickback">后踢腿/弹力带后踢</option>
+            </optgroup>
+            <optgroup label="拉背类">
+              <option value="row">弹力带划船/面拉</option>
+              <option value="fly">弹力带夹胸</option>
+            </optgroup>
+            <optgroup label="核心类">
+              <option value="plank">平板支撑</option>
+              <option value="crunch">卷腹/死虫/鸟狗</option>
+            </optgroup>
+            <optgroup label="有氧类">
+              <option value="cardio">高抬腿/开合步</option>
+            </optgroup>
+            <optgroup label="拉伸类">
+              <option value="stretch">静态拉伸</option>
+            </optgroup>
           </select>
         </div>
         <div id="tempoPhaseList" class="tempo-phase-list"></div>
